@@ -17,6 +17,7 @@
 #include "spidy/monitor_rate.hpp"
 #include "spidy/eye_snapshot.hpp"
 #include "spidy/vr_settings.hpp"
+#include "spidy/dive_toggle.hpp"
 #include "spidy/web_visual.hpp"
 #include "spidy/web_pull.hpp"
 #include "spidy/web_grab.hpp"
@@ -1585,6 +1586,73 @@ int main() {
             check(threw,"an invalid gravity accepted");
         }
         near(s.config().gravity,14.715f);
+    });
+    test("game swing command: version 5 carries a dive, earlier versions none", [] {
+        game_swing::Command c;
+        c.focused = 1;
+        c.serial = 1;
+        check(!game_swing::input(c).dive, "a command without a dive asked for one");
+        c.dive = 1;
+        check(game_swing::valid(c) && game_swing::input(c).dive, "a version 5 dive was lost");
+        auto bad = c;
+        bad.dive = 2;
+        check(!game_swing::valid(bad), "a dive word of 2 was accepted");
+        bad = c;
+        bad.version = 4;
+        check(!game_swing::valid(bad), "a version 4 command with a dive was accepted");
+    });
+    test("a dive falls under the game's free-fall gravity, faster than the speed limit", [] {
+        TestWorld w;w.enabled=false;
+        auto config=inert();config.gravity=6;config.maxSpeed=32;
+        Swing s(config);
+        Input in;
+        const Body falling{{0,500,0},{0,-40,0},false};
+        near(s.predictNativeStep(.02f,in,w,falling).velocity.y,-32,.01f);
+        in.dive=true;
+        near(s.predictNativeStep(.02f,in,w,falling).velocity.y,-40-26*.02f,.01f);
+        check(s.diving()&&s.speedLimit()>42,"the dive did not raise the limit to the game's terminal velocity");
+        // The limit rises 8 m/s each second to the mover's 65.
+        for(int i=0;i<150;++i)s.predictNativeStep(.02f,in,w,{{0,500,0},{0,-60,0},false});
+        near(s.speedLimit(),65);
+        near(s.predictNativeStep(.02f,in,w,{{0,500,0},{0,-64.9f,0},false}).velocity.y,-65,.01f);
+        // Heavier weights keep their own gravity in a dive.
+        s.setGravity(29.43f);
+        near(s.predictNativeStep(.02f,in,w,{{0,500,0},{0,0,0},false}).velocity.y,-29.43f*.02f);
+        // On the ground there is no dive.
+        s.predictNativeStep(.02f,in,w,{{0,0,0},{},true});
+        check(!s.diving(),"a dive on the ground");
+    });
+    test("a web ends a dive; the swing it starts carries the fall's speed", [] {
+        TestWorld w;w.enabled=false;
+        auto config=inert();config.maxSpeed=32;
+        Swing s(config);
+        auto in=aimed();in.dive=true;
+        s.predictNativeStep(.01f,in,w,{{0,0,0},{0,-45,0},false});
+        check(s.webs()[0].attached&&!s.diving(),"the web did not end the dive");
+        near(s.speedLimit(),32*40/24.f,.01f);
+        // Released, the speed over the limit bleeds off at 4 m/s each second.
+        in.hands[0].grip=0;in.dive=false;
+        for(int i=0;i<50;++i)s.predictNativeStep(.02f,in,w,{{0,0,0},{0,-30,0},false});
+        check(!s.webs()[0].attached,"the web held after its release");
+        near(s.speedLimit(),32*40/24.f-4,.05f);
+        for(int i=0;i<300;++i)s.predictNativeStep(.02f,in,w,{{0,0,0},{0,-30,0},false});
+        near(s.speedLimit(),32);
+    });
+    test("the game's swing carries a fall: 1x up to 6 m/s, 40/24 from 42", [] {
+        near(fallCarry(0),1);near(fallCarry(6),1);near(fallCarry(-20),1);
+        near(fallCarry(16),27.25f/24);near(fallCarry(42),40/24.f);near(fallCarry(90),40/24.f);
+        near(fallCarry(29),(27.25f+12.75f/2)/24);
+        near(fallCarry(std::numeric_limits<float>::quiet_NaN()),1);
+    });
+    test("dive toggle: a press in free flight starts it; a press, a web or landing ends it", [] {
+        using Change = DiveToggle::Change;
+        DiveToggle d;
+        check(d.update(true,false)==Change::none&&!d.diving(),"a press out of free flight dived");
+        check(d.update(true,true)==Change::started&&d.diving(),"a press in free flight did not dive");
+        check(d.update(false,true)==Change::none&&d.diving(),"the dive did not hold");
+        check(d.update(true,true)==Change::ended&&!d.diving(),"a second press did not end the dive");
+        d.update(true,true);
+        check(d.update(false,false)==Change::ended&&!d.diving(),"a web or landing did not end the dive");
     });
     test("sky anchors respect body occlusion and later world obstruction", [] {
         struct Occluded : TestWorld {
@@ -7386,7 +7454,9 @@ int main() {
         game_swing::Command c;
         c.focused = 1;
         c.serial = 1;
-        check(c.version == 4 && c.bytes == 200 && game_swing::valid(c), "a level version 4 command was rejected");
+        check(c.version == 5 && c.bytes == 200 && game_swing::valid(c), "a level version 5 command was rejected");
+        c.version = 4;
+        check(game_swing::valid(c), "a level version 4 command was rejected");
         c.version = 3;
         c.bytes = game_swing::commandBytesV3;
         check(game_swing::valid(c), "a level version 3 command was rejected");

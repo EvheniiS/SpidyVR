@@ -93,9 +93,31 @@ struct SwingConfig {
     //   body that had walked on back by all of that once it left the ground.
     bool physical = false;
     float bendOut = .06f, bendClearance = .35f, bendRope = .5f, handHeight = .6f, maxHandSpeed = 8;
+    // A dive (Input::dive) in free flight: the game's own free fall
+    // (herotraversalconfig: StandardFallGravity 26 m/s^2, terminal velocity
+    // 42 m/s, rising at StandardFallTermVelAccel 8 m/s per second toward
+    // StandardFallTerminalVelocityMax, 100 in the game and the mover's limit here).
+    float diveGravity = 26, diveSpeed = 42, diveSpeedRamp = 8, diveSpeedMax = 65;
+    // Speed over maxSpeed (a dive's, or what a web carries out of one) bleeds
+    // off at this rate once nothing holds it up.
+    float overspeedDecay = 4;
 };
 // The edges one web bends round at most (SwingConfig::physical).
 constexpr int maxBends = 6;
+
+// The game's swing carries a fall into the swing that catches it: its speed
+// limit for the swing rises with the fall speed when the web attaches
+// (hero_swingsetup_standard.config SpeedParams: falling at 6, 16 and 42 m/s,
+// the horizontal terminal velocity is 24, 27.25 and 40 m/s). The limit a
+// swing gets, as a multiple of the normal one: 1 up to 6 m/s, 5/3 from 42.
+inline float fallCarry(float fallSpeed) {
+    if (!std::isfinite(fallSpeed) || fallSpeed <= 6)
+        return 1;
+    const float terminal = fallSpeed < 16   ? 24 + (fallSpeed - 6) * (27.25f - 24) / (16 - 6)
+                           : fallSpeed < 42 ? 27.25f + (fallSpeed - 16) * (40 - 27.25f) / (42 - 16)
+                                            : 40;
+    return terminal / 24;
+}
 struct HandInput {
     Pose aim{};                // world space, -Z forward
     Vec3 gripRelativeToHead{}; // tracking meters, excludes artificial travel
@@ -109,7 +131,9 @@ struct Input {
     std::array<HandInput, 2> hands{};
     Vec3 move{}; // world horizontal direction, magnitude <= 1
     float trackingYaw{};
-    bool focused = true, jump{};
+    // dive: a dive is wanted (the XR side's toggle); it acts only in free
+    // flight, with no web attached.
+    bool focused = true, jump{}, dive{};
     // A flip's tilt of the tracking space (Rig::tilt), the identity while level.
     Quat tilt{};
     // A charged leap let go of: its charge, above 0 up to 1, for as long as
@@ -276,6 +300,13 @@ class Swing {
     const SwingConfig& config() const {
         return config_;
     }
+    // The speed limit now: maxSpeed, or above it while a dive's speed lasts.
+    float speedLimit() const {
+        return limit_;
+    }
+    bool diving() const {
+        return diving_;
+    }
     const std::vector<Event>& events() const {
         return events_;
     }
@@ -330,6 +361,8 @@ class Swing {
     std::array<HandState, 2> hands_{};
     std::vector<Event> events_;
     double accumulator_{};
+    // Raises or bleeds limit_ toward what this step allows (see overspeedDecay).
+    void steerLimit(float dt, const Input&);
     float sinceZip_ = 100, sinceLanding_ = 100, zipSpeed_{};
     Vec3 zipDirection_{};
     bool jumpHeld_{}, jumpQueued_{};
@@ -354,5 +387,9 @@ class Swing {
     // The step the input sample in hand is for (a hand's rate is no faster
     // than its travel over that step).
     float stepSeconds_{};
+    // limit_: the speed limit now. carry_: what the attached webs' swing
+    // allows (fallCarry at the attachment). diveTime_: seconds in this dive.
+    float limit_{}, carry_{}, diveTime_{};
+    bool diving_{};
 };
 } // namespace spidy

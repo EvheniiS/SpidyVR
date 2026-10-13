@@ -53,7 +53,8 @@ Swing::Swing(SwingConfig c) : config_(c) {
         c.maxZipImpulse,    c.jumpSpeed,       c.pointLaunchWindow, c.zipLandingWindow, c.obstructionTime,
         c.anchorClearance,  c.wallStep,        c.wallCarry,       c.wallWalkSpeed,   c.wallAcceleration,   c.wallBrake,
         c.wallJumpOut,      c.wallJumpUp,      c.wallJumpPause,   c.wallGrace,          c.crestSeconds,
-        c.crestPush,        c.crestHop};
+        c.crestPush,        c.crestHop,        c.diveGravity,     c.diveSpeed,       c.diveSpeedRamp,
+        c.diveSpeedMax,     c.overspeedDecay};
     for (float v : nonnegative)
         if (!std::isfinite(v) || v < 0)
             throw std::invalid_argument("Invalid swing configuration");
@@ -68,6 +69,7 @@ Swing::Swing(SwingConfig c) : config_(c) {
         throw std::invalid_argument("Invalid wall mount");
     if (!std::isfinite(c.handHeight) || c.bendRope > c.minRope)
         throw std::invalid_argument("Invalid physical web");
+    limit_ = c.maxSpeed;
 }
 void Swing::allowPhysical(bool allowed) {
     config_.physical = allowed;
@@ -168,7 +170,11 @@ void Swing::unwrap(int i, const WorldQueries& world) {
 void Swing::limitSpeed(float maxSpeed) {
     if (!std::isfinite(maxSpeed) || maxSpeed <= 0)
         throw std::invalid_argument("Invalid swing speed limit");
+    // Speed a dive left over the old limit bleeds off as before; otherwise
+    // the new limit holds from the next step.
+    const bool over = limit_ > config_.maxSpeed;
     config_.maxSpeed = maxSpeed;
+    limit_ = over ? std::max(limit_, maxSpeed) : maxSpeed;
 }
 void Swing::setGravity(float gravity) {
     if (!std::isfinite(gravity) || gravity < 0)
@@ -513,6 +519,9 @@ void Swing::reset(Body b) {
     sinceWallJump_ = 100;
     mount_ = mountLeft_ = 0;
     mounting_ = offered_ = mountOffered_ = false;
+    limit_ = config_.maxSpeed;
+    carry_ = diveTime_ = 0;
+    diving_ = false;
 }
 void Swing::release(int i, EventKind reason) {
     if (webs_[i].attached)
@@ -600,6 +609,8 @@ void Swing::releaseAll() {
     sinceZip_ = sinceLanding_ = 100;
     zipSpeed_ = 0;
     zipDirection_ = {};
+    diving_ = false;
+    diveTime_ = 0;
 }
 void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
     jumpQueued_ |= in.jump && !jumpHeld_;
@@ -650,6 +661,8 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                 w = *fired.web;
                 // To the hand that holds it.
                 w.length = std::max(config_.minRope, length(hold(i) - body_.position));
+                // The swing carries the fall it catches (fallCarry).
+                carry_ = std::max(carry_, config_.maxSpeed * fallCarry(-body_.velocity.y));
                 s.triggerReleased = false;
                 s.reeling = false;
                 s.zipUsed = false;
@@ -687,8 +700,7 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                     if (s.pullDistance >= config_.yankDistance && speed >= config_.yankSpeed) {
                         const float impulse = std::min(speed * config_.zipMultiplier, config_.maxZipImpulse);
                         body_.velocity =
-                            limited(body_.velocity + normalized(w.anchor - body_.position) * impulse,
-                                    config_.maxSpeed);
+                            limited(body_.velocity + normalized(w.anchor - body_.position) * impulse, limit_);
                         sinceZip_ = 0;
                         zipSpeed_ = length(body_.velocity);
                         zipDirection_ = normalized(Vec3{body_.velocity.x, 0, body_.velocity.z});
@@ -722,6 +734,22 @@ void Swing::move(Vec3 target, const World* collision) {
         if (n.y > .65f)
             body_.grounded = true;
     }
+}
+void Swing::steerLimit(float dt, const Input& in) {
+    const bool attached = webs_[0].attached || webs_[1].attached;
+    if (!attached)
+        carry_ = 0;
+    // A dive acts in free flight only: a web, the ground or a wall ends it.
+    diving_ = in.dive && !attached && !body_.grounded && !wall_.on;
+    diveTime_ = diving_ ? diveTime_ + dt : 0;
+    float target = config_.maxSpeed;
+    if (attached)
+        target = std::max(target, carry_);
+    if (diving_)
+        target = std::max(target, std::min(config_.diveSpeedMax,
+                                           config_.diveSpeed + config_.diveSpeedRamp * diveTime_));
+    target = std::min(target, std::max(config_.maxSpeed, config_.diveSpeedMax));
+    limit_ = target >= limit_ ? target : std::max(target, limit_ - config_.overspeedDecay * dt);
 }
 void Swing::step(float dt, const Input& in, const WorldQueries& world, const World* collision) {
     sinceZip_ += dt;
@@ -773,6 +801,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         }
         jumpQueued_ = false;
     }
+    steerLimit(dt, in);
     const float wallBefore = wall_.on ? dot(body_.position - wall_.point, wall_.normal) : 0.f;
     const Vec3 before = body_.position;
     if (wall_.on) {
@@ -794,13 +823,13 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         if (supported)
             body_.velocity.y = 0;
         else
-            body_.velocity.y -= config_.gravity * dt;
+            body_.velocity.y -= (diving_ ? std::max(config_.gravity, config_.diveGravity) : config_.gravity) * dt;
         if (crest_ > 0) {
             // Over a wall's top edge: on over the roof behind it.
             crest_ -= dt;
             body_.velocity -= crestNormal_ * (config_.crestPush * dt);
         }
-        body_.velocity = limited(body_.velocity, config_.maxSpeed);
+        body_.velocity = limited(body_.velocity, limit_);
         body_.grounded = supported;
     }
     move(body_.position + body_.velocity * dt, collision);
@@ -927,7 +956,7 @@ MotionIntent Swing::predictNativeStep(float seconds, const Input& input, const W
     accumulator_ = 0;
     if (!std::isfinite(seconds) || seconds <= 0 || !input.focused ||
         !std::isfinite(inputSeconds) || inputSeconds < 0 || !finite(actual.position) ||
-        !finite(actual.velocity) || length(actual.velocity) > config_.maxSpeed * 2) {
+        !finite(actual.velocity) || length(actual.velocity) > limit_ * 2) {
         releaseAll();
         return {};
     }
@@ -938,7 +967,8 @@ MotionIntent Swing::predictNativeStep(float seconds, const Input& input, const W
     if (actual.grounded && !body_.grounded)
         sinceLanding_ = 0;
     body_ = actual;
-    body_.velocity = limited(body_.velocity, config_.maxSpeed);
+    // The steps below hold the body to the speed limit. A web attached in
+    // inputs() first sees the fall it catches at its full speed (fallCarry).
     stepSeconds_ = seconds;
     // A hand moves its rope once per sample of it.
     if (!(inputSeconds > 0))

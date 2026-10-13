@@ -417,11 +417,12 @@ void visit(const native_rays::QueryContext& world) {
     // Constraint correction and world-coordinate float rounding can make the
     // requested displacement slightly exceed the solver's velocity limit.
     // Cap the actual native request instead of relinquishing control midair.
+    // The solver's limit now: above config.maxSpeed while a dive's speed lasts.
     // The movement module moves the body farthestStep a step at most; the
     // command's own step may be an eighth longer than this one before that
     // shortens it.
     const float cap =
-        std::min(config.maxSpeed * (1.f - 1e-6f), .875f * native_movement::farthestStep / motion.dt);
+        std::min(solver.speedLimit() * (1.f - 1e-6f), .875f * native_movement::farthestStep / motion.dt);
     const Vec3 average = delta / motion.dt;
     Vec3 requested = limited(average, cap);
     bool overhead{};
@@ -490,7 +491,7 @@ void visit(const native_rays::QueryContext& world) {
         // strike's own in real time, at rest once it has arrived.
         inFlight.issued(request.serial, requested,
                         striking ? limited(flight.velocity, config.maxSpeed)
-                                 : limited(predicted.velocity + requested - average, config.maxSpeed));
+                                 : limited(predicted.velocity + requested - average, solver.speedLimit()));
         owned = true;
     } else if (owned) {
         relinquishMotion();

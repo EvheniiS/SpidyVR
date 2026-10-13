@@ -22,6 +22,9 @@ struct Config {
     // grabbing, as before). Only kinds the game adapter can move take effect.
     uint32_t grabKinds{};
 };
+// The movement module's own limit: every speed the VR settings offer, and
+// the fastest a dive goes.
+constexpr float motionSpeedLimit = 65;
 inline SwingConfig physicsConfig(const Config& c) {
     SwingConfig physics;
     physics.maxSpeed = c.maxSpeed;
@@ -34,6 +37,7 @@ inline SwingConfig physicsConfig(const Config& c) {
     physics.walls = true;
     // And webs are ropes (Settings::physical).
     physics.physical = true;
+    physics.diveSpeedMax = motionSpeedLimit;
     return physics;
 }
 // MoverStandard applies a velocity command during the physics step after the
@@ -113,14 +117,15 @@ struct Hand {
     float trigger{}, grip{};
 };
 struct Command {
-    uint32_t magic = 0x5357434d, version = 4, bytes = sizeof(Command), focused{};
+    uint32_t magic = 0x5357434d, version = 5, bytes = sizeof(Command), focused{};
     uint64_t serial{};
     uint32_t leaseMs = 100, jump{};
     Hand hands[2];
     Vec3 move{};
     float trackingYaw{};
     float sampleSeconds = 1.f / 90.f;
-    uint32_t reserved{};
+    // Version 5: a dive is wanted (Input::dive). Earlier versions: zero.
+    uint32_t dive{};
     uint64_t sampleTimeNs = 1;
     // Version 3: a flip's tilt of the tracking space (Input::tilt). Version 2
     // (commandBytesV2, the probes') ends before it: level.
@@ -209,8 +214,6 @@ struct Ropes {
     float free[2]{}, whole[2]{};
 };
 static_assert(sizeof(Ropes) == 80);
-// The movement module's own limit: every speed the VR settings offer.
-constexpr float motionSpeedLimit = 65;
 // The most gravity a swing takes, m/s^2: every weight the VR settings offer.
 constexpr float maxGravity = 30;
 static_assert(sizeof(WebState) == 28 && sizeof(Data) == 272 && offsetof(Data, wall) == 240);
@@ -255,10 +258,11 @@ inline bool valid(const Command& c) {
     const float tilt = t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w;
     if (c.magic != 0x5357434d ||
         !((c.version == 2 && c.bytes == commandBytesV2) || (c.version == 3 && c.bytes == commandBytesV3) ||
-          (c.version == 4 && c.bytes == sizeof(c))) ||
+          ((c.version == 4 || c.version == 5) && c.bytes == sizeof(c))) ||
         !std::isfinite(c.leap) || c.leap < 0 || c.leap > 1 || !finite(c.look) || length(c.look) > 1.01f ||
         !c.serial || c.focused > 1 || c.jump > 1 || c.leaseMs > 250 || (c.focused && !c.leaseMs) ||
-        !finite(c.move) || length(c.move) > 1.001f || !std::isfinite(c.trackingYaw) || c.reserved ||
+        !finite(c.move) || length(c.move) > 1.001f || !std::isfinite(c.trackingYaw) || c.dive > 1 ||
+        (c.version < 5 && c.dive) ||
         !std::isfinite(c.sampleSeconds) || c.sampleSeconds <= 0 || c.sampleSeconds > .1f ||
         (c.focused && !c.sampleTimeNs) || !std::isfinite(tilt) || tilt < .99f || tilt > 1.01f)
         return false;
@@ -329,6 +333,7 @@ inline Input input(const Command& c) {
     Input out;
     out.focused = c.focused != 0;
     out.jump = c.jump != 0;
+    out.dive = c.version >= 4 && c.dive != 0;
     out.move = c.move;
     out.trackingYaw = c.trackingYaw;
     const float n =

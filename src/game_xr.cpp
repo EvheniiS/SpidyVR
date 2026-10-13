@@ -3,6 +3,7 @@
 #include "spidy/native_body.hpp"
 // The input bridge remains a separately verified, separately stoppable module.
 #include "spidy/body_calibration.hpp"
+#include "spidy/dive_toggle.hpp"
 #include "spidy/eye_resolution.hpp"
 #include "spidy/monitor_rate.hpp"
 #include "spidy/eye_snapshot.hpp"
@@ -677,6 +678,12 @@ DWORD WINAPI run(void*) {
         // thug pulled in the air, a perfect dodge).
         SlowMoments moments;
         StickPress slowPress;
+        // The dive: the right thumbstick's click in free flight (DiveToggle).
+        // While a dive can start or is on, that click is the dive's and not
+        // the game's LB + RB (pullPress).
+        StickPress divePress;
+        DiveToggle dive;
+        bool diveOwnsStick{};
         SlowMotionData slowCounts;
         uint64_t slowSteppedMs = GetTickCount64();
         auto stepSlowMotion = [&](float seconds, bool pressed, bool allowed) {
@@ -1112,6 +1119,18 @@ DWORD WINAPI run(void*) {
                                    slowPress.update(frame.seconds, slowAllowed, frame.hands[0].stickClick,
                                                     frame.hands[1].stickClick),
                                    slowAllowed);
+                    // The dive, in flight Spidy owns with no web attached, as the
+                    // latest swing sample has it; a pulse in both hands as it starts.
+                    const bool diveFree = slowAllowed && swingStarted && swingState.owned &&
+                                          !swingState.webs[0].attached && !swingState.webs[1].attached &&
+                                          game_swing::airborne(swingState, now.QuadPart, frequency.QuadPart);
+                    if (dive.update(divePress.update(frame.seconds, slowAllowed, frame.hands[1].stickClick,
+                                                     frame.hands[0].stickClick),
+                                    diveFree) == DiveToggle::Change::started) {
+                        runtime.haptic(0, .3f);
+                        runtime.haptic(1, .3f);
+                    }
+                    diveOwnsStick = diveFree || dive.diving();
                     if (motion.active && !raysStarted) {
                         native_rays::Config rays;
                         rays.pid = config.pid;
@@ -1153,6 +1172,7 @@ DWORD WINAPI run(void*) {
                                 ? frame.seconds
                                 : 1.f / 90.f;
                         input.jump = motion.swing.jump;
+                        input.dive = dive.diving();
                         input.move = motion.swing.move;
                         input.trackingYaw = motion.swing.trackingYaw;
                         input.tilt = motion.swing.tilt;
@@ -1473,7 +1493,8 @@ DWORD WINAPI run(void*) {
                         }
                         // The game's LB + RB, its web pull where it shows the two
                         // (a door, a grate): both web buttons on the thing, which
-                        // no web holds on, and a yank; or the right stick's click.
+                        // no web holds on, and a yank; or the right stick's click
+                        // where it does not dive.
                         std::array<WebPullHand, 2> pulling{};
                         bool free = swingStarted && swingState.grounded && !calibrationInput;
                         for (unsigned i = 0; i < 2; ++i) {
@@ -1492,7 +1513,7 @@ DWORD WINAPI run(void*) {
                             runtime.haptic(1, 1);
                             message(3, 0, "Web pull - the game's LB + RB, for as long as you hold both web buttons");
                         }
-                        walk.pull = pullPress.update(frame.seconds, playing, frame.hands[1].stickClick,
+                        walk.pull = pullPress.update(frame.seconds, playing && !diveOwnsStick, frame.hands[1].stickClick,
                                                      frame.hands[0].stickClick) ||
                                     (yanked && playing);
                         // The right stick pushed down heals, in the air as on
@@ -2190,7 +2211,8 @@ DWORD WINAPI run(void*) {
                                 : "VR active - A jumps (hold: Charge Jump), B dodges, Y interacts (hold: step "
                                   "up to it), X opens the game menu, the menu button pauses, the left "
                                   "stick's click slows time; a trigger pulled at your temple scans; right "
-                                  "stick: click is the game's LB + RB, down heals, up is its LT + RT (vents)");
+                                  "stick: click dives in the air and elsewhere is the game's LB + RB, down "
+                                  "heals, up is its LT + RT (vents)");
                 }
             }
             {
