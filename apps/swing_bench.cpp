@@ -1,7 +1,9 @@
 // Swings without a headset: the same solver the game runs, in an open world
 // whose webs hold on a ceiling 60 m up, under each swing model. Prints what
-// each swing did (the swing ledger), so a change to the swing's physics can be
-// measured before anyone puts the headset on.
+// each swing did (the swing ledger) and how high it threw the body (apex: the
+// top of the swing and of the flight after it, above where the swing began;
+// throw: how far the body rose after letting go), so a change to the swing's
+// physics can be measured before anyone puts the headset on.
 //
 //   spidy_swing_bench [gravity m/s^2, default 9.81] [speed limit m/s, default 40] [game]
 //
@@ -87,21 +89,30 @@ float pitchOf(Vec3 v) {
     const float s = length(v);
     return s < .1f ? 0 : std::asin(std::clamp(v.y / s, -1.f, 1.f)) * 57.29578f;
 }
-void print(const char* name, const SwingLedger& l, float g) {
+void print(const char* name, const SwingLedger& l, float g, float apex = 0, float thrown = 0) {
     // Energies as metres of height (over gravity), as analyze_swings.py prints them.
-    std::printf("  %-28s in %4.1f out %4.1f peak %4.1f drop %5.1f %4.1fs | rope %5.1f snap %4.1f(%u) "
-                "elastic %5.1f sling %5.1f pump %5.1f boost %4.1f yank %5.1f jump %5.1f cap %5.1f | catches %u "
-                "stretch %.1f m momentum %.1f\n",
-                name, l.entry, l.exit, l.peak, l.drop, l.seconds, l.rope / g, l.snapLoss / g, l.snaps, l.elastic / g,
-                l.sling / g, l.pump / g, l.boost / g, l.yank / g, l.jump / g, l.cap / g, l.catches, l.deepest, l.momentum);
+    std::printf(
+        "  %-28s in %4.1f out %4.1f peak %4.1f drop %5.1f apex %+5.1f throw %4.1f %4.1fs | "
+        "rope %5.1f snap %4.1f(%u) elastic %5.1f sling %5.1f pump %5.1f boost %4.1f yank %5.1f jump %5.1f "
+        "cap %5.1f | catches %u stretch %.1f m momentum %.1f\n",
+        name, l.entry, l.exit, l.peak, l.drop, apex, thrown, l.seconds, l.rope / g, l.snapLoss / g, l.snaps,
+        l.elastic / g, l.sling / g, l.pump / g, l.boost / g, l.yank / g, l.jump / g, l.cap / g, l.catches,
+        l.deepest, l.momentum);
 }
+struct Thrown {
+    SwingLedger ledger;
+    float apex;   // the top of the swing and of the flight after it, above where the swing began
+    float thrown; // how far the body rose after letting go
+};
 // One swing: a web shot `pitch` degrees above the way the body goes, held
 // until the body rises at `release` degrees (or `most` seconds), then let go
-// (or, with jump, jumped off).
-SwingLedger swing(Swing& s, const OpenWorld& world, Body start, float pitch, float release, bool jump, float most = 9) {
+// (or, with jump, jumped off), and flown on to the top of its flight.
+Thrown swing(Swing& s, const OpenWorld& world, Body start, float pitch, float release, bool jump,
+             float most = 9) {
     ::start(s, start);
     const Vec3 way = ahead(start.velocity, pitch);
     bool rose = false;
+    float top = start.position.y;
     for (float t = 0; t < most; t += frame) {
         Input in = aimed(now(s).position, way, true);
         const Vec3 v = now(s).velocity;
@@ -114,6 +125,7 @@ SwingLedger swing(Swing& s, const OpenWorld& world, Body start, float pitch, flo
             break;
         }
         advance(s, in, world);
+        top = std::max(top, now(s).position.y);
         if (!s.webs()[0].attached && t > 0)
             break;
     }
@@ -121,7 +133,17 @@ SwingLedger swing(Swing& s, const OpenWorld& world, Body start, float pitch, flo
         Input in = aimed(now(s).position, way, false);
         advance(s, in, world);
     }
-    return s.lastSwing();
+    const SwingLedger ledger = s.lastSwing();
+    const float released = now(s).position.y;
+    float flown = released;
+    for (float t = 0; t < 6 && !now(s).grounded; t += frame) {
+        top = std::max(top, now(s).position.y);
+        flown = std::max(flown, now(s).position.y);
+        if (now(s).velocity.y <= 0)
+            break;
+        advance(s, aimed(now(s).position, way, false), world);
+    }
+    return {ledger, top - start.position.y, flown - released};
 }
 // Swings one after another for 20 s: each web shot 45 degrees up ahead (65
 // below 20 m) after a short free flight, held until the body rises at 30
@@ -134,7 +156,7 @@ void chain(SwingConfig config, float g, bool jump) {
     int samples = 0, swings = 0;
     bool holding = false, rose = false, lowest = false;
     Vec3 way{};
-    float minY = 1e9f;
+    float minY = 1e9f, maxY = 0;
     while (t < 20) {
         Input in;
         const Vec3 v = now(s).velocity;
@@ -162,14 +184,16 @@ void chain(SwingConfig config, float g, bool jump) {
         advance(s, in, world);
         sum += length(now(s).velocity);
         minY = std::min(minY, now(s).position.y);
+        maxY = std::max(maxY, now(s).position.y);
         lowest |= now(s).grounded;
         ++samples;
         t += frame;
     }
-    std::printf("  20 s of swings%s: %d swings, mean speed %.1f, end speed %.1f m/s, end height %.0f m, lowest %.0f m%s, "
-                "momentum %.1f (high stage %u times)\n",
-                jump ? " (jumping off)" : "", swings, sum / samples, length(now(s).velocity), now(s).position.y,
-                minY, lowest ? " (touched the ground)" : "", s.momentum(), s.surges());
+    std::printf("  20 s of swings%s: %d swings, mean speed %.1f, end speed %.1f m/s, end height %.0f m, "
+                "lowest %.0f m%s, highest %.0f m, momentum %.1f (high stage %u times)\n",
+                jump ? " (jumping off)" : "", swings, sum / samples, length(now(s).velocity),
+                now(s).position.y, minY, lowest ? " (touched the ground)" : "", maxY, s.momentum(),
+                s.surges());
     (void)g;
 }
 void yankCatch(SwingConfig config, float g) {
@@ -208,16 +232,18 @@ int main(int argc, char** argv) {
         std::printf("%s swing (gravity %.2f, limit %.0f m/s%s)\n", model == SwingModel::v2 ? "2.0" : "Classic", g,
                     limit, native ? ", frames as the game runs them" : "");
         Swing s(config);
-        for (float v0 : {0.f, 10.f, 20.f}) {
-            const std::string name = "level at " + std::to_string(static_cast<int>(v0)) + " m/s";
-            print(name.c_str(), swing(s, world, {{0, 35, 0}, {v0, 0, 0}, false}, 45, 30, false), g);
-        }
-        for (float fall : {10.f, 20.f, 30.f}) {
-            const std::string name = "falling at " + std::to_string(static_cast<int>(fall)) + " m/s";
-            print(name.c_str(), swing(s, world, {{0, 40, 0}, {3, -fall, 0}, false}, 45, 30, false), g);
-        }
-        print("level at 10, jumping off", swing(s, world, {{0, 35, 0}, {10, 0, 0}, false}, 45, 30, true), g);
-        print("level at 10, off at 50 deg", swing(s, world, {{0, 35, 0}, {10, 0, 0}, false}, 45, 50, true), g);
+        const auto show = [&](const std::string& name, Body body, float release, bool jump) {
+            const auto r = swing(s, world, body, 45, release, jump);
+            print(name.c_str(), r.ledger, g, r.apex, r.thrown);
+        };
+        for (float v0 : {0.f, 10.f, 20.f})
+            show("level at " + std::to_string(static_cast<int>(v0)) + " m/s", {{0, 35, 0}, {v0, 0, 0}, false},
+                 30, false);
+        for (float fall : {10.f, 20.f, 30.f})
+            show("falling at " + std::to_string(static_cast<int>(fall)) + " m/s",
+                 {{0, 40, 0}, {3, -fall, 0}, false}, 30, false);
+        show("level at 10, jumping off", {{0, 35, 0}, {10, 0, 0}, false}, 30, true);
+        show("level at 10, off at 50 deg", {{0, 35, 0}, {10, 0, 0}, false}, 50, true);
         yankCatch(config, g);
         chain(config, g, false);
         chain(config, g, true);

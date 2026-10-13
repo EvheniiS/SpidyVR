@@ -8045,23 +8045,16 @@ int main() {
         check(lengths[0] < 59 - .8f * SwingConfig{}.reelSpeed, ("classic wound to " + std::to_string(lengths[0])).c_str());
         check(lengths[1] > 59 - .5f, ("2.0 wound the rope to " + std::to_string(lengths[1]) + " m").c_str());
     });
-    test("2.0's speed boost speeds a swing up, never near the ground", [] {
-        struct Low : Ceiling {
-            std::optional<RayHit> raycast(Vec3 o, Vec3 d, float range) const override {
-                if (d.y < -.99f && range >= 5) // ground 5 m below everywhere
-                    return RayHit{o + d * 5, {0, 1, 0}, 2, true};
-                return Ceiling::raycast(o, d, range);
-            }
-        };
-        const auto boosted = [](SwingModel model, bool low) {
+    test("2.0's speed boost lifts a slow start to its target and leaves a fast swing alone", [] {
+        // The game's SpeedBoostTarget 10 m/s, at real gravity 10 x sqrt(9.81 / 26) = 6.1 m/s.
+        const float target = 10 * std::sqrt(9.81f / 26);
+        const auto boosted = [](SwingModel model, float speed) {
             SwingConfig c;
             c.maxSpeed = 40;
             applySwingModel(c, model);
             spidy::Swing s(c);
-            Ceiling high;
-            Low ground;
-            const World& world = low ? static_cast<const World&>(ground) : high;
-            s.reset({{0, 35, 0}, {5, 0, 0}, false});
+            Ceiling world;
+            s.reset({{0, 35, 0}, {speed, 0, 0}, false});
             const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
             for (int f = 0; f < 180; ++f) {
                 Input in;
@@ -8070,10 +8063,12 @@ int main() {
             }
             return s.swing().boost;
         };
-        const float v2 = boosted(SwingModel::v2, false);
-        check(v2 > 5 && v2 <= .5f * (13 * 13 - 5 * 5) + 1, ("the boost gave " + std::to_string(v2)).c_str());
-        check(boosted(SwingModel::classic, false) == 0, "the classic swing boosted");
-        check(boosted(SwingModel::v2, true) == 0, "the swing boosted 5 m above the ground");
+        // From rest: at most what takes a body from rest to the target.
+        const float slow = boosted(SwingModel::v2, 0);
+        check(slow > 2 && slow <= .5f * target * target + .5f,
+              ("the boost gave " + std::to_string(slow)).c_str());
+        check(boosted(SwingModel::v2, 12) == 0, "a swing at 12 m/s was boosted");
+        check(boosted(SwingModel::classic, 0) == 0, "the classic swing boosted");
     });
     test("2.0's momentum: jumps off fill it, its high stage speeds the swing up, and it falls away", [] {
         for (const auto model : {SwingModel::classic, SwingModel::v2}) {
@@ -8115,8 +8110,11 @@ int main() {
         applySwingModel(c, SwingModel::v2);
         spidy::Swing s(c);
         Ceiling world;
-        s.reset({{0, 40, 0}, {3, -20.5f, 0}, false});
-        const Quat aim = arc({0, 0, -1}, normalized(Vec3{.3f, 1, 0}));
+        // Level at the limit (a slow fall: the swing's limit stays 21), a web
+        // ahead that pulls taut past its anchor; what the catch keeps goes
+        // over the limit.
+        s.reset({{0, 40, 0}, {20.5f, -3, 0}, false});
+        const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
         for (int f = 0; f < 135; ++f) {
             Input in;
             in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};

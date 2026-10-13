@@ -57,11 +57,13 @@ Swing::Swing(SwingConfig c) : config_(c) {
         c.diveSpeedMax,     c.overspeedDecay,  c.catchMin,        c.catchFrequency,  c.catchBounce,
         c.catchKeep,        c.swingFall,       c.swingRise,       c.jumpOffUp[0],    c.jumpOffUp[1],
         c.jumpOffUp[2],     c.jumpOffBoost[0], c.jumpOffBoost[1], c.jumpOffBoost[2], c.jumpOffMid,
-        c.catchDepth,       c.boostTarget,     c.boostAccel,      c.boostJerk,       c.boostAltitude,
+        c.catchDepth,       c.boostTarget,     c.boostAccel,      c.boostJerk,       c.boostStart,
         c.momentumHigh,     c.momentumLimit,   c.momentumGravity, c.momentumTime};
     for (float v : nonnegative)
         if (!std::isfinite(v) || v < 0)
             throw std::invalid_argument("Invalid swing configuration");
+    if (!(c.gameFall > 0) || !std::isfinite(c.gameFall))
+        throw std::invalid_argument("Invalid game gravity");
     if (c.catchBounce >= 1 || c.catchKeep > 1 || c.catchFrequency > 10 || c.swingFall > 4 || c.swingRise > 4 ||
         !(c.jumpOffHigh > c.jumpOffMid) || c.jumpOffHigh > 90 || c.momentumHigh > 5 || c.momentumLimit < 1 ||
         c.momentumLimit > 2 || c.momentumGravity > 2 || !(c.momentumTime > 0) || c.momentumTime > 4)
@@ -535,7 +537,8 @@ void Swing::reset(Body b) {
     diving_ = false;
     swing_ = lastSwing_ = {};
     swinging_ = false;
-    boostTo_ = boostRamp_ = 0;
+    boostRamp_ = 0;
+    swingMode_ = 0;
     momentum_ = 0;
     sinceMomentum_ = sinceLetGo_ = sinceJumpOff_ = sinceYank_ = 100;
     surges_ = 0;
@@ -781,9 +784,9 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                 s.stretch = s.stretchSpeed = s.give = 0;
                 // The swing carries the fall it catches (fallCarry).
                 carry_ = std::max(carry_, config_.maxSpeed * fallCarry(-body_.velocity.y));
-                // The speed boost raises the swing from this speed (boostTarget).
-                boostTo_ = length(body_.velocity) + config_.boostTarget;
+                // A new swing, from the top of its arc (the game's mode 0).
                 boostRamp_ = 0;
+                swingMode_ = 0;
                 s.triggerReleased = false;
                 s.reeling = false;
                 s.zipUsed = false;
@@ -977,6 +980,9 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             // lightens it (momentumGravity).
             float angle{};
             const bool hanging = hung(&angle);
+            // Carried up past the bottom of the arc (the game's mode 1).
+            if (hanging && body_.velocity.y > 0)
+                swingMode_ = 1;
             const float lighter =
                 config_.momentum && momentum_ >= config_.momentumHigh ? config_.momentumGravity : 1.f;
             const float swung =
@@ -988,7 +994,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             // with the rope 20 degrees from straight down, 0.2 at 90; to 4).
             if (hanging)
                 gainMomentum((.125f + .075f * std::clamp((angle - 20) / 70, 0.f, 1.f)) * dt / config_.momentumTime, 4);
-            boostSwing(dt, world);
+            boostSwing(dt);
         }
         if (crest_ > 0) {
             // Over a wall's top edge: on over the roof behind it.
@@ -1198,22 +1204,29 @@ bool Swing::hung(float* angle) const {
         *angle = any ? upright : 0;
     return any;
 }
-void Swing::boostSwing(float dt, const WorldQueries& world) {
-    float angle{};
-    const float speed = length(body_.velocity);
-    // On a taut web's way down, or through the bottom of its arc.
-    const bool on = config_.boostTarget > 0 && !body_.grounded && speed > .5f && speed < boostTo_ &&
-                    hung(&angle) && (body_.velocity.y < 0 || angle < 30) &&
-                    !world.raycast(body_.position, {0, -1, 0}, config_.boostAltitude);
+float Swing::gameScale() const {
+    return std::sqrt(std::max(config_.gravity, .1f) / config_.gameFall);
+}
+void Swing::boostSwing(float dt) {
+    const float scale = gameScale(), target = config_.boostTarget * scale;
+    const Vec3 v = body_.velocity;
+    // The game measures a rising body's speed along the level.
+    const float speed = v.y > 0 ? length(Vec3{v.x, 0, v.z}) : length(v), total = length(v);
+    // Only from the web's attaching to the bottom of its arc (the game's mode
+    // 0), and only below the target: the boost lifts a slow start. The game
+    // has no height rule (its SpeedBoostAltMin is in no type it loads).
+    const bool on =
+        target > 0 && !body_.grounded && swingMode_ == 0 && total > .5f && speed < target && hung();
     if (!on) {
         boostRamp_ = 0;
         return;
     }
-    boostRamp_ = std::min(config_.boostAccel, boostRamp_ + config_.boostJerk * dt);
-    const Vec3 before = body_.velocity;
-    body_.velocity = before * (std::min(boostTo_, speed + boostRamp_ * dt) / speed);
+    const float k = scale * scale, most = config_.boostAccel * k;
+    boostRamp_ = boostRamp_ > 0 ? std::min(most, boostRamp_ + config_.boostJerk * k * scale * dt)
+                                : std::min(most, config_.boostStart * k);
+    body_.velocity = v + v * (std::min(target - speed, boostRamp_ * dt) / total);
     if (counting())
-        swing_.boost += gained(before, body_.velocity);
+        swing_.boost += gained(v, body_.velocity);
 }
 void Swing::gainMomentum(float amount, float cap, float* since, float retrigger) {
     if (!config_.momentum || amount <= 0 || momentum_ >= cap || (since && *since < retrigger))

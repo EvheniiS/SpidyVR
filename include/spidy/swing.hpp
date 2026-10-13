@@ -135,14 +135,20 @@ struct SwingConfig {
     // (jumpOffHigh degrees and steeper). All 0: the jump does nothing there.
     float jumpOffUp[3]{}, jumpOffBoost[3]{};
     float jumpOffMid = 25, jumpOffHigh = 50;
-    // The swing's speed boost (hero_swingsetup SpeedParams: SpeedBoostTarget
-    // 8 m/s, SpeedBoostAccel 20 m/s^2, SpeedBoostAccelAccel 120 m/s^3,
-    // SpeedBoostAltMin 12 m). On a taut web's way down and through the bottom
-    // of its arc the body speeds up along its way, at an acceleration rising
-    // by boostJerk a second to boostAccel, until it goes boostTarget faster
-    // than when that web attached; not within boostAltitude of the ground.
-    // boostTarget 0: no boost.
-    float boostTarget = 0, boostAccel = 20, boostJerk = 120, boostAltitude = 12;
+    // 2.0's numbers from the game are the game's own, m/s and m/s^2 under its
+    // free fall of gameFall (herotraversalconfig StandardFallGravity 26
+    // m/s^2), and the solver scales them to the player's gravity so that they
+    // lift the body as high: speeds by sqrt(gravity / gameFall), 0.61 at real
+    // gravity, accelerations by gravity / gameFall.
+    float gameFall = 26;
+    // The swing's speed boost (hero_swingsetup_standard SpeedParams, read in
+    // the game's code, Oct 13 2026: SpeedBoostTarget 10 m/s, an absolute
+    // speed; SpeedBoostAccel 20 m/s^2, starting at 8 and rising by
+    // SpeedBoostAccelAccel 120 m/s^3). A slow swing speeds up along its way
+    // from a web's attaching to the bottom of its arc, while it goes slower
+    // than boostTarget (a rising body: along the level). It lifts a slow start;
+    // at swinging speeds it does nothing. boostTarget 0: no boost.
+    float boostTarget = 0, boostStart = 8, boostAccel = 20, boostJerk = 120;
     // The momentum meter (hero_swingconfig MomentumConfig; Swing::momentum):
     // 0 to 5, raised by swinging, letting go on the way up, jumping off,
     // yanks and dives, falling away in the air within a second of the last
@@ -199,7 +205,7 @@ inline void applySwingModel(SwingConfig& c, SwingModel model) {
     c.catchKeep = v2 ? 1.f : classic.catchKeep;
     c.catchDepth = v2 ? 3.f : classic.catchDepth;
     c.reelFollows = v2 || classic.reelFollows;
-    c.boostTarget = v2 ? 8.f : classic.boostTarget;
+    c.boostTarget = v2 ? 10.f : classic.boostTarget;
     c.momentum = v2 || classic.momentum;
     c.momentumTime = v2 ? 1.5f : classic.momentumTime;
     c.swingFall = v2 ? 1.25f : classic.swingFall;
@@ -522,7 +528,10 @@ class Swing {
     // down at the most upright such web (degrees; 0 for none).
     bool hung(float* angle = nullptr) const;
     // The swing's speed boost for one step (SwingConfig's boost*).
-    void boostSwing(float dt, const WorldQueries&);
+    void boostSwing(float dt);
+    // 2.0's game speeds at this player's gravity (SwingConfig::gameFall):
+    // speeds scale by this, accelerations by its square.
+    float gameScale() const;
     // The momentum meter: a rise of `amount` up to `cap` (none once the meter
     // is there); `retrigger`, the seconds this source waits after its last
     // rise. And its fall for one step.
@@ -585,8 +594,12 @@ class Swing {
     SwingLedger swing_{}, lastSwing_{};
     float swingStartY_{};
     bool swinging_{};
-    // The speed boost: the speed it raises the swing to, and its acceleration now.
-    float boostTo_{}, boostRamp_{};
+    // The speed boost's acceleration now.
+    float boostRamp_{};
+    // Where the swing is on its arc (the game's swing mode): 0 from a web's
+    // attaching to the bottom of its arc, 1 once a taut web carries the body
+    // up past it.
+    int swingMode_{};
     // The momentum meter, the seconds since it last rose, since each source
     // raised it, and the times it has reached momentumHigh.
     float momentum_{}, sinceMomentum_ = 100, sinceLetGo_ = 100, sinceJumpOff_ = 100, sinceYank_ = 100;
