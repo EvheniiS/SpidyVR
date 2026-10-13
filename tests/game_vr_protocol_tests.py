@@ -112,11 +112,24 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(frame_rates(samples)['submitted_fps'],50)
 
     def test_timing_decodes_stage_means_and_rejects_torn_reads(self):
-        raw=bytearray(344)
-        struct.pack_into('<4IQ',raw,0,0x5358544d,1,344,0,6)
+        raw=bytearray(1416)
+        struct.pack_into('<4IQ',raw,0,0x5358544d,2,1416,0,6)
         for i in range(10):
             struct.pack_into('<Q3d',raw,24+32*i,4,8+i*4,10+i,1+i)
+        # 90 gaps in the 16.5-17 ms bucket (33), 9 in 22-22.5 (44), 1 in 33-33.5 (66).
+        struct.pack_into('<3I',raw,344+4*33,90,0,0)
+        struct.pack_into('<I',raw,344+4*44,9)
+        struct.pack_into('<I',raw,344+4*66,1)
+        struct.pack_into('<2Q',raw,344+1024,100,0)
+        struct.pack_into('<4I',raw,344+1040,10,1,3,0)
+        struct.pack_into('<2d',raw,344+1056,33.2,11.1)
         result=timing_snapshot(Reader(raw,struct.pack('<Q',6)),0)
+        cadence=result['cadence']
+        self.assertEqual(cadence['new_pair_gap_ms']['p50_ms'],17.0)
+        self.assertEqual(cadence['new_pair_gap_ms']['p95_ms'],22.5)
+        self.assertEqual(cadence['new_pair_gap_ms']['p99_ms'],22.5)
+        self.assertEqual(cadence['new_pair_gap_ms']['p999_ms'],33.5)
+        self.assertEqual((cadence['over_1_5_periods'],cadence['over_2_periods'],cadence['max_reused_run']),(10,1,3))
         self.assertEqual(result['copy_wait']['mean_ms'],7)
         self.assertEqual(result['display_period']['last_ms'],10)
         self.assertIsNone(timing_snapshot(Reader(*([raw,struct.pack('<Q',8)]*8)),0))
@@ -775,7 +788,7 @@ class ProtocolTests(unittest.TestCase):
                                      (collision_snapshot, 0x53435044, 2160),
                                      (movement_snapshot, 0x534d5044, 57408),
                                      (motion_snapshot, 0x534d5644, 176), (ray_snapshot, 0x53525944, 784),
-                                     (swing_snapshot,0x53574441,272),(timing_snapshot,0x5358544d,344),
+                                     (swing_snapshot,0x53574441,272),(timing_snapshot,0x5358544d,1416),
                                      (appearance_snapshot,0x53415044,328),(eye_snapshot,0x53455353,112),
                                      (grab_snapshot,0x53475244,368),(body_snapshot,0x53424453,144),
                                      (punch_snapshot,0x53505544,168),(shooter_snapshot,0x53484f44,192),

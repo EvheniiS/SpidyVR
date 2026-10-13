@@ -1005,11 +1005,12 @@ def save_eye_snapshot(game, address, shot, folder, name, view=544, crop=512):
 
 def timing_snapshot(game, address):
     names=('frame','wait_frame','tracking','prepare','acquire','copy_wait','hand_overlay','release','end_frame','display_period')
+    size=1416
     for _ in range(8):
-        raw=game.read(address,344)
-        if len(raw)!=344:
+        raw=game.read(address,size)
+        if len(raw)!=size:
             return None
-        if struct.unpack_from('<3I',raw)!=(0x5358544d,1,344):
+        if struct.unpack_from('<3I',raw)!=(0x5358544d,2,size):
             raise RuntimeError('XR timing protocol mismatch')
         if struct.unpack_from('<Q',raw,16)[0]&1 or raw[16:24]!=game.read(address+16,8):
             continue
@@ -1017,8 +1018,33 @@ def timing_snapshot(game, address):
         for i,name in enumerate(names):
             count,total,maximum,last=struct.unpack_from('<Q3d',raw,24+32*i)
             result[name]=dict(count=count,mean_ms=total/count if count else 0,max_ms=maximum,last_ms=last)
+        gaps=struct.unpack_from('<128I',raw,344)
+        loops=struct.unpack_from('<128I',raw,344+512)
+        new_gaps,loop_frames=struct.unpack_from('<2Q',raw,344+1024)
+        over15,over2,max_run,_run=struct.unpack_from('<4I',raw,344+1040)
+        max_gap,period=struct.unpack_from('<2d',raw,344+1056)
+        result['cadence']=dict(
+            period_ms=period,
+            new_pair_gap_ms=dict(count=new_gaps,max_ms=max_gap,**histogram_percentiles(gaps)),
+            over_1_5_periods=over15, over_2_periods=over2, max_reused_run=max_run,
+            loop_ms=dict(count=loop_frames,**histogram_percentiles(loops)))
         return result
     return None
+
+
+def histogram_percentiles(hist, width_ms=0.5):
+    """p50/p95/p99/p99.9 of 0.5 ms buckets, as the bucket's upper edge; the last bucket is open-ended."""
+    total=sum(hist)
+    result={}
+    for name,q in (('p50',.5),('p95',.95),('p99',.99),('p999',.999)):
+        need,seen=q*total,0
+        result[name+'_ms']=None
+        for i,n in enumerate(hist):
+            seen+=n
+            if total and seen>=need:
+                result[name+'_ms']=(i+1)*width_ms
+                break
+    return result
 
 
 # Slow motion's counters (SlowMotionData in game_xr.cpp); a change of one is a sample.
@@ -1804,7 +1830,14 @@ def session(a, startup):
         print(json.dumps(dict(final=final, gpu=result['gpu'], appearance=result['appearance'],
                               xr_stop=xr_stop, bridge_stop=bridge_stop), indent=2))
         if result['timing']:
-            print('Mean milliseconds after warmup: '+', '.join(f'{k}={v["mean_ms"]:.2f}' for k,v in result['timing'].items()),flush=True)
+            print('Mean milliseconds after warmup: '+', '.join(f'{k}={v["mean_ms"]:.2f}' for k,v in result['timing'].items() if k!='cadence'),flush=True)
+            cad=result['timing'].get('cadence')
+            if cad and cad['new_pair_gap_ms']['count']:
+                g,l=cad['new_pair_gap_ms'],cad['loop_ms']
+                print(f"Smoothness (display period {cad['period_ms']:.2f} ms): new-pair gap p50={g['p50_ms']} "
+                      f"p95={g['p95_ms']} p99={g['p99_ms']} p99.9={g['p999_ms']} max={g['max_ms']:.1f} ms; "
+                      f"gaps over 1.5x/2x period: {cad['over_1_5_periods']}/{cad['over_2_periods']} of {g['count']}; "
+                      f"longest reused run: {cad['max_reused_run']}; XR loop p99={l['p99_ms']} ms.",flush=True)
         if result['frame_rates']:
             rates=result['frame_rates']
             print(f"New native scene pairs: {rates['new_scene_fps']:.1f}/s; "

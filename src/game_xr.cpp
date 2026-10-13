@@ -628,6 +628,7 @@ DWORD WINAPI run(void*) {
         uint64_t shotsBefore[2]{};
         uint64_t submittedFrames{};
         uint64_t previousPresentedGeneration{};
+        double lastNewPairMs = -1; // when the last new pair was submitted (QPC, ms); -1 after the game screen
         // The player's standing eye height above the floor: it rises at once
         // to a higher head and sinks a centimetre a second, so crouching
         // does not shrink the body.
@@ -2164,6 +2165,7 @@ DWORD WINAPI run(void*) {
                 InterlockedIncrement64(&SpidyXrTimingData.sequence);
                 for (unsigned i = 0; i < 10; ++i)
                     SpidyXrTimingData.stages[i].add(stages[i]);
+                SpidyXrTimingData.loop(timing.total);
                 InterlockedIncrement64(&SpidyXrTimingData.sequence);
             }
             // Count only a successful xrEndFrame containing a projection layer.
@@ -2199,15 +2201,29 @@ DWORD WINAPI run(void*) {
                 if (submitted) {
                     ++d.submitted;
                     // Game-screen frames are not eye images: neither new nor reused ones.
+                    LARGE_INTEGER qpc{}, qpcFrequency{};
+                    QueryPerformanceCounter(&qpc);
+                    QueryPerformanceFrequency(&qpcFrequency);
+                    const double nowMs = 1000.0 * static_cast<double>(qpc.QuadPart) /
+                                         static_cast<double>(qpcFrequency.QuadPart);
                     if (drawn == Presentation::gameScreen || drawn == Presentation::stereoScreen) {
                         ++d.screenSubmitted;
                         d.stereoSubmitted += drawn == Presentation::stereoScreen;
+                        lastNewPairMs = -1;
                     } else if (d.generation != previousPresentedGeneration) {
                         ++d.uniqueSubmitted;
                         lastNewImageMs = lastPresentedMs;
                         previousPresentedGeneration = d.generation;
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        SpidyXrTimingData.newPair(lastNewPairMs < 0 || submittedFrames < 30 ? 0 : nowMs - lastNewPairMs,
+                                                  timing.period);
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        lastNewPairMs = nowMs;
                     } else {
                         ++d.reusedSubmitted;
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        SpidyXrTimingData.reused();
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
                     }
                 }
                 InterlockedIncrement64(&d.sequence);
