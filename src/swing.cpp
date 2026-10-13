@@ -64,6 +64,12 @@ Swing::Swing(SwingConfig c) : config_(c) {
             throw std::invalid_argument("Invalid swing configuration");
     if (!(c.gameFall > 0) || !std::isfinite(c.gameFall))
         throw std::invalid_argument("Invalid game gravity");
+    for (int i = 0; i < 3; ++i)
+        if (!(c.jumpOffGravity[i] > 0) || !std::isfinite(c.jumpOffGravity[i]) || !(c.jumpOffFloor[i] >= 0) ||
+            !std::isfinite(c.jumpOffFloor[i]))
+            throw std::invalid_argument("Invalid jump off");
+    if (!(c.jumpOffSwing >= 0) || !std::isfinite(c.jumpOffSwing))
+        throw std::invalid_argument("Invalid jump off");
     if (c.catchBounce >= 1 || c.catchKeep > 1 || c.catchFrequency > 10 || c.swingFall > 4 || c.swingRise > 4 ||
         !(c.jumpOffHigh > c.jumpOffMid) || c.jumpOffHigh > 90 || c.momentumHigh > 5 || c.momentumLimit < 1 ||
         c.momentumLimit > 2 || c.momentumGravity > 2 || !(c.momentumTime > 0) || c.momentumTime > 4)
@@ -948,7 +954,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             }
             body_.grounded = false;
         } else if (webs_[0].attached || webs_[1].attached) {
-            jumpOff(in);
+            jumpOff();
         }
         jumpQueued_ = false;
     }
@@ -1165,24 +1171,32 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
     if (body_.grounded && !wasGrounded)
         sinceLanding_ = 0;
 }
-void Swing::jumpOff(const Input& in) {
+void Swing::jumpOff() {
     const Vec3 v = body_.velocity;
     const float speed = length(v);
-    // The swing's phase by the velocity's pitch: 0 level or falling, 1 at
-    // jumpOffMid degrees up, 2 from jumpOffHigh.
+    // The band by the velocity's pitch: low below jumpOffMid degrees, middle
+    // to jumpOffHigh, high from there.
     const float pitch = speed > .5f ? std::asin(std::clamp(v.y / speed, -1.f, 1.f)) * 57.29578f : 0.f;
-    const float mid = config_.jumpOffMid, high = config_.jumpOffHigh;
-    const float band = pitch <= 0 ? 0.f : pitch < mid ? pitch / mid : pitch < high ? 1 + (pitch - mid) / (high - mid) : 2.f;
-    const int low = std::min(1, static_cast<int>(band));
-    const auto at = [&](const float (&values)[3]) { return values[low] + (values[low + 1] - values[low]) * (band - low); };
-    const float up = at(config_.jumpOffUp), boost = at(config_.jumpOffBoost);
-    if (up <= 0 && boost <= 0)
+    const int band = pitch < config_.jumpOffMid ? 0 : pitch < config_.jumpOffHigh ? 1 : 2;
+    const float floor = config_.jumpOffFloor[band];
+    if (config_.jumpOffUp[band] <= 0 && floor <= 0 && config_.jumpOffBoost[band] <= 0)
         return; // the classic swing: a jump does nothing on a web
-    Vec3 way = normalized(Vec3{v.x, 0, v.z});
-    if (length(Vec3{v.x, 0, v.z}) < 1)
-        way = finite(in.move) && length(in.move) > .1f ? normalized(Vec3{in.move.x, 0, in.move.z}) : Vec3{};
-    Vec3 next = v + way * boost;
-    next.y = std::max(next.y, up);
+    // The gains only off a swing (jumpOffSwing), not off a web just shot.
+    const bool swung = sinceAttach_ >= config_.jumpOffSwing;
+    const float up = swung ? config_.jumpOffUp[band] : 0, boost = swung ? config_.jumpOffBoost[band] : 0;
+    // In the game's m/s: v.y = max(v.y + JumpBoost, VertFloorJump), then as
+    // fast as rises as high at the player's gravity as that does at the
+    // game's gravity after a jump.
+    const float scale = gameScale();
+    const float rise = std::max(v.y / scale + up, floor) * scale *
+                       std::sqrt(config_.gameFall / config_.jumpOffGravity[band]);
+    // Along the level: JumpBoostXZ, ramped in from 10 to 30 degrees up and
+    // out from 35 to 55. Straight up there is no way to go: no stick picks one.
+    const float ramp = std::clamp((pitch - 10) / 20, 0.f, 1.f) * std::clamp((55 - pitch) / 20, 0.f, 1.f);
+    const Vec3 level{v.x, 0, v.z};
+    const Vec3 way = length(level) < 1 ? Vec3{} : normalized(level);
+    Vec3 next = v + way * (boost * ramp * scale);
+    next.y = std::max(v.y, rise); // a jump never slows the way up
     next = limited(next, limit_);
     if (swinging_) {
         swing_.jump += gained(v, next);
@@ -1192,7 +1206,7 @@ void Swing::jumpOff(const Input& in) {
     gainMomentum(1, 5, &sinceJumpOff_, 1); // SwingReleaseData JumpData: 1, to 5, once a second
     for (int i = 0; i < 2; ++i)
         release(i);
-    events_.push_back({EventKind::JumpOff, -1, std::clamp(band / 2, .4f, 1.f)});
+    events_.push_back({EventKind::JumpOff, -1, std::clamp(band / 2.f, .4f, 1.f)});
 }
 bool Swing::hung(float* angle, float* rope) const {
     bool any{};

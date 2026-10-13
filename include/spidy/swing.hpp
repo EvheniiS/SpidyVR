@@ -138,13 +138,20 @@ struct SwingConfig {
     // high as it fell (spidy_swing_bench: 0.3 loses height, 0.5 gains it).
     bool swingCurve = false;
     float swingIntent = .4f;
-    // A jump with a web attached in the air leaps off the swing
-    // (hero_swingconfig ReleaseParams by the velocity's pitch): every web lets
-    // go, the body rises at least jumpOffUp m/s and goes jumpOffBoost m/s
-    // faster along its way, each from the low band (level or falling) through
-    // the middle one (rising at jumpOffMid degrees) to the high one
-    // (jumpOffHigh degrees and steeper). All 0: the jump does nothing there.
-    float jumpOffUp[3]{}, jumpOffBoost[3]{};
+    // A jump with a web attached in the air leaps off the swing (the game's
+    // release, 0xac17aa, by the velocity's pitch): every web lets go, the
+    // body's speed up gains jumpOffUp and is at least jumpOffFloor, and it
+    // goes jumpOffBoost faster along the level, most at 30-35 degrees up and
+    // none below 10 or from 55 (its ramp). Each is the low band's below
+    // jumpOffMid degrees, the middle one's to jumpOffHigh and the high one's
+    // from there; game m/s (gameFall). The game pulls harder after a jump
+    // (jumpOffGravity); the speed up is set so the body rises as high as it
+    // would there. All 0: the jump does nothing there. The gains need a web
+    // held jumpOffSwing seconds: sooner, the jump lifts only to the floor.
+    // Added on any web, a grip and A pressed together climbed 500 m in 20 s
+    // (spidy_swing_bench); each gain now takes a swing.
+    float jumpOffUp[3]{}, jumpOffFloor[3]{}, jumpOffBoost[3]{}, jumpOffGravity[3]{26, 26, 26};
+    float jumpOffSwing = 0;
     float jumpOffMid = 25, jumpOffHigh = 50;
     // 2.0's numbers from the game are the game's own, m/s and m/s^2 under its
     // free fall of gameFall (herotraversalconfig StandardFallGravity 26
@@ -202,11 +209,10 @@ struct SwingLedger {
 constexpr int maxBends = 6;
 
 // The swing models (the launcher's SWING MODEL). classic: 0.2.11's swing,
-// SwingConfig's defaults. v2: the elastic web (3 m deep at most), the swing's
-// pump, the jump off the swing, the speed boost and the momentum meter, at
-// about the game's timings and half its jump (its VertFloorJump 12/22/30 and
-// JumpBoost 8/20/24 m/s), for a player whose gravity is real gravity rather
-// than the game's 26 m/s^2; and a winch that waits for the body.
+// SwingConfig's defaults. v2: the elastic web (3 m deep at most), the game's
+// swing gravity, the jump off the swing, the speed boost and the momentum
+// meter, from the game's code (Oct 13 2026) and scaled to the player's
+// gravity (SwingConfig::gameFall); and a winch that waits for the body.
 enum class SwingModel : uint32_t { classic, v2 };
 inline void applySwingModel(SwingConfig& c, SwingModel model) {
     const SwingConfig classic;
@@ -226,11 +232,20 @@ inline void applySwingModel(SwingConfig& c, SwingModel model) {
     c.swingCurve = v2 || classic.swingCurve;
     c.swingFall = v2 ? 24.f / 26 : classic.swingFall;
     c.swingRise = classic.swingRise;
-    constexpr float up[3]{6, 10, 13}, boost[3]{4, 9, 11};
+    // SwingReleaseParamSet Low / Mid / High: JumpBoost, VertFloorJump; the
+    // gravity after a jump (20 / 38 / 45); JumpBoostXZ 1.5. Bands at
+    // ReleaseAngleLowFinal 7 and HighStart 45 degrees (Fall, below -10, is
+    // Low's again).
+    constexpr float up[3]{8, 20, 24}, floor[3]{12, 22, 30}, after[3]{20, 38, 45}, along[3]{1.5f, 1.5f, 1.5f};
     for (int i = 0; i < 3; ++i) {
         c.jumpOffUp[i] = v2 ? up[i] : classic.jumpOffUp[i];
-        c.jumpOffBoost[i] = v2 ? boost[i] : classic.jumpOffBoost[i];
+        c.jumpOffFloor[i] = v2 ? floor[i] : classic.jumpOffFloor[i];
+        c.jumpOffGravity[i] = v2 ? after[i] : classic.jumpOffGravity[i];
+        c.jumpOffBoost[i] = v2 ? along[i] : classic.jumpOffBoost[i];
     }
+    c.jumpOffSwing = v2 ? .5f : classic.jumpOffSwing; // the soft catch's end: a swing from here
+    c.jumpOffMid = v2 ? 7.f : classic.jumpOffMid;
+    c.jumpOffHigh = v2 ? 45.f : classic.jumpOffHigh;
 }
 // The game's swing carries a fall into the swing that catches it: its speed
 // limit for the swing rises with the fall speed when the web attaches
@@ -539,7 +554,7 @@ class Swing {
     // each rope's stretch kept to go on along the swing, per unit mass.
     std::array<float, 2> stretchRopes(float dt);
     // A jump with a web attached in the air (SwingConfig's jumpOff*).
-    void jumpOff(const Input&);
+    void jumpOff();
     // A taut web holding the body up, and the rope's angle from straight
     // down at the most upright such web (degrees; 0 for none) and its length.
     bool hung(float* angle = nullptr, float* rope = nullptr) const;

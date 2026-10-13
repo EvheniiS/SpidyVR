@@ -8014,9 +8014,56 @@ int main() {
         // On the way up the arc, where a jump off pays most.
         const auto v2 = swingAhead(SwingModel::v2, 1.7f, true), held = swingAhead(SwingModel::v2, 1.7f);
         check(!v2.attached && v2.ledger.jumpOff == 1 && v2.ledger.jump > 0, "the jump did not leap off the swing");
-        check(v2.body.velocity.y >= 6 - 2 * 9.81f / 120 - .01f, // the floor, then two steps of gravity
-               ("the jump off rose at " + std::to_string(v2.body.velocity.y)).c_str());
+        // The lowest floor (the game's 12 m/s under its 20 m/s^2 after a low
+        // jump: 12 x sqrt(9.81 / 20)), then two steps of gravity.
+        check(v2.body.velocity.y >= 12 * std::sqrt(9.81f / 20) - 2 * 9.81f / 120 - .01f,
+              ("the jump off rose at " + std::to_string(v2.body.velocity.y)).c_str());
         check(v2.ledger.exit > held.ledger.exit + 3, ("the jump off left at " + std::to_string(v2.ledger.exit) + ", letting go at " + std::to_string(held.ledger.exit) + ", vy " + std::to_string(held.body.velocity.y)).c_str());
+    });
+    test("2.0's jump off: the game's bands, as high as the game's jump", [] {
+        // A web shot straight up and a jump in the same moment: the jump
+        // leaves from this velocity, before any gravity (as if the web had
+        // been held long enough, unless `fresh`).
+        const auto jumped = [](Vec3 velocity, Vec3 stick = {}, bool fresh = false) {
+            SwingConfig c;
+            applySwingModel(c, SwingModel::v2);
+            if (!fresh)
+                c.jumpOffSwing = 0;
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 35, 0}, velocity, false});
+            Input in;
+            in.hands[0] = {{s.body().position, arc({0, 0, -1}, {0, 1, 0})}, {}, true, 0, 1};
+            in.jump = true;
+            in.move = stick;
+            s.update(1.f / 120, in, world);
+            check(!s.webs()[0].attached && s.lastSwing().jumpOff == 1, "the jump did not leave the swing");
+            return s.body().velocity + Vec3{0, 9.81f / 120, 0}; // without the step's gravity
+        };
+        // Game m/s at real gravity, and back for the height under the game's
+        // gravity after a jump: v.y = max(v.y / s + JumpBoost, VertFloorJump) x s x sqrt(26 / after).
+        const float scale = std::sqrt(9.81f / 26);
+        const auto rise = [&](float vy, float boost, float floor, float after) {
+            return std::max(vy / scale + boost, floor) * scale * std::sqrt(26 / after);
+        };
+        const Vec3 level = jumped({10, 0, 0}); // low band: the floor, and nothing along
+        near(level.y, rise(0, 8, 12, 20), .02f);
+        near(level.x, 10, .02f);
+        const Vec3 mid = jumped({8.66f, 5, 0}); // 30 degrees up: middle band, the full boost along
+        near(mid.y, rise(5, 20, 22, 38), .02f);
+        near(mid.x, 8.66f + 1.5f * scale, .02f);
+        const Vec3 high = jumped({5, 8.66f, 0}); // 60 degrees up: high band, nothing along
+        near(high.y, rise(8.66f, 24, 30, 45), .02f);
+        near(high.x, 5, .02f);
+        // Off a web just shot, only the floor: no climbing on grip and A.
+        near(jumped({10, 0, 0}, {}, true).y, rise(0, 0, 12, 20), .02f);
+        near(jumped({8.66f, 5, 0}, {}, true).y, std::max(5.f, rise(5, 0, 22, 38)), .02f);
+        near(jumped({8.66f, 5, 0}, {}, true).x, 8.66f, .02f);
+        // With no way along the level, a stick held aside does not pick one
+        // (it only steers, at airAcceleration).
+        const Vec3 up = jumped({.5f, .29f, 0}, {0, 0, 1});
+        check(std::abs(up.x - .5f) < 1e-3f && std::abs(up.z) < .1f,
+              ("the jump went " + std::to_string(up.z) + " m/s sideways").c_str());
     });
     // A swing from rest on a web 45 degrees up ahead, 25 m long, with no
     // speed boost: the body's speed after `early` seconds, its height then,
