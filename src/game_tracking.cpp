@@ -213,9 +213,14 @@ Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs) {
         // The web button and the reel: the grip and the trigger, or swapped.
         const float web = triggerWebs ? hand.trigger : hand.squeeze;
         const float reel = triggerWebs ? hand.squeeze : hand.trigger;
-        if (handValid(hand))
-            input.hands[i] = {rig.toWorld(hand.aim), hand.grip.position - f.head.position, true,
-                              std::clamp(reel, 0.f, 1.f), std::clamp(web, 0.f, 1.f)};
+        if (handValid(hand)) {
+            // Webs leave the wrist's shooter along the controller's aim;
+            // punches land at the aim's point, the knuckles.
+            const auto aim = rig.toWorld(hand.aim);
+            input.hands[i] = {rig.toWorld({webShooterPoint(hand.grip, i), hand.aim.orientation}),
+                              hand.grip.position - f.head.position, true, std::clamp(reel, 0.f, 1.f),
+                              std::clamp(web, 0.f, 1.f), aim.position};
+        }
     }
     const auto& move = f.hands[0];
     if (handValid(move) && std::hypot(move.stickX, move.stickY) > .2f) {

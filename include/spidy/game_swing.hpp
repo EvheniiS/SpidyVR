@@ -117,7 +117,7 @@ struct Hand {
     float trigger{}, grip{};
 };
 struct Command {
-    uint32_t magic = 0x5357434d, version = 5, bytes = sizeof(Command), focused{};
+    uint32_t magic = 0x5357434d, version = 6, bytes = sizeof(Command), focused{};
     uint64_t serial{};
     uint32_t leaseMs = 100, jump{};
     Hand hands[2];
@@ -135,8 +135,12 @@ struct Command {
     // (commandBytesV3) ends before them.
     float leap{};
     Vec3 look{};
+    // Version 6: each hand's knuckles (HandInput::fist); the hands' aims start
+    // at the web shooters. Versions 4 and 5 (commandBytesV5) end before them:
+    // punches at the aim's point.
+    Vec3 fists[2]{};
 };
-constexpr uint32_t commandBytesV2 = 168, commandBytesV3 = 184;
+constexpr uint32_t commandBytesV2 = 168, commandBytesV3 = 184, commandBytesV5 = 200;
 struct WebState {
     uint32_t attached{}, bodyId{};
     Vec3 anchor{};
@@ -172,8 +176,9 @@ struct Data {
     float wallDistance{};
     uint32_t walls{}, wallJumps{}, mount{};
 };
-static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 200 &&
-              offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3);
+static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 224 &&
+              offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3 &&
+              offsetof(Command, fists) == commandBytesV5);
 // SpidySwingSettings: what the VR settings (the SPIDY VR tab in the game's
 // Settings) change during play.
 // grab: webs catch props and thugs (a swing started without them starts
@@ -258,11 +263,11 @@ inline bool valid(const Command& c) {
     const float tilt = t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w;
     if (c.magic != 0x5357434d ||
         !((c.version == 2 && c.bytes == commandBytesV2) || (c.version == 3 && c.bytes == commandBytesV3) ||
-          ((c.version == 4 || c.version == 5) && c.bytes == sizeof(c))) ||
+          ((c.version == 4 || c.version == 5) && c.bytes == commandBytesV5) || (c.version == 6 && c.bytes == sizeof(c))) ||
         !std::isfinite(c.leap) || c.leap < 0 || c.leap > 1 || !finite(c.look) || length(c.look) > 1.01f ||
         !c.serial || c.focused > 1 || c.jump > 1 || c.leaseMs > 250 || (c.focused && !c.leaseMs) ||
         !finite(c.move) || length(c.move) > 1.001f || !std::isfinite(c.trackingYaw) || c.dive > 1 ||
-        (c.version < 5 && c.dive) ||
+        (c.version < 5 && c.dive) || !finite(c.fists[0]) || !finite(c.fists[1]) ||
         !std::isfinite(c.sampleSeconds) || c.sampleSeconds <= 0 || c.sampleSeconds > .1f ||
         (c.focused && !c.sampleTimeNs) || !std::isfinite(tilt) || tilt < .99f || tilt > 1.01f)
         return false;
@@ -346,7 +351,7 @@ inline Input input(const Command& c) {
     }
     for (unsigned i = 0; i < 2; ++i)
         out.hands[i] = {c.hands[i].aim, c.hands[i].relative, c.hands[i].tracked != 0, c.hands[i].trigger,
-                        c.hands[i].grip};
+                        c.hands[i].grip, c.version >= 6 ? c.fists[i] : Vec3{}};
     return out;
 }
 } // namespace spidy::game_swing

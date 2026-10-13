@@ -118,15 +118,32 @@ inline float fallCarry(float fallSpeed) {
                                             : 40;
     return terminal / 24;
 }
+// The web shooter's nozzle, as Spider-Man's: on the palm side of the wrist,
+// at the heel of the hand (a right hand's grip frame: +y back toward the
+// forearm, +x toward the back of the hand; a left hand mirrors x). Webs leave
+// here, along the controller's aim; the aim pose itself sits at the knuckles.
+constexpr Vec3 webShooterFromGrip{-.02f, .075f, 0};
+inline Vec3 webShooterPoint(Pose grip, unsigned hand) {
+    const Vec3 o = webShooterFromGrip;
+    return grip.position + grip.orientation.rotate({hand == 0 ? -o.x : o.x, o.y, o.z});
+}
 struct HandInput {
-    Pose aim{};                // world space, -Z forward
+    // World space, -Z forward: the controller's aim, from the web shooter
+    // (webShooterPoint; trackedSwingInput).
+    Pose aim{};
     Vec3 gripRelativeToHead{}; // tracking meters, excludes artificial travel
     bool tracked{};
     // grip shoots and holds this hand's web; trigger reels it in (a free
     // hand's shoots a web ball). The controller's own grip and trigger unless
     // the player swapped them (trackedSwingInput).
     float trigger{}, grip{};
+    // World space: the knuckles (the controller's aim point), where punches
+    // land; the aim's point when it is not known.
+    Vec3 fist{};
 };
+inline Vec3 fistPoint(const HandInput& h) {
+    return finite(h.fist) && (h.fist.x != 0 || h.fist.y != 0 || h.fist.z != 0) ? h.fist : h.aim.position;
+}
 struct Input {
     std::array<HandInput, 2> hands{};
     Vec3 move{}; // world horizontal direction, magnitude <= 1

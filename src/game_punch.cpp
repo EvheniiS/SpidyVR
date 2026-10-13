@@ -355,7 +355,7 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
         return opened;
     watch.current(bots);
     fighter = player;
-    // The fist at the aim pose (the knuckles); its motion relative to the
+    // The fist at the knuckles (the aim pose's point); its motion relative to the
     // player is the grip relative to the head, turned from tracking space.
     std::array<PunchHand, 2> hands{};
     const Quat toWorld = trackingTurn(in);
@@ -372,7 +372,7 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
     int tracked{};
     for (int i = 0; i < 2; ++i) {
         const auto& h = in.hands[i];
-        hands[i] = {in.focused && h.tracked, h.aim.position, toWorld.rotate(h.gripRelativeToHead),
+        hands[i] = {in.focused && h.tracked, fistPoint(h), toWorld.rotate(h.gripRelativeToHead),
                     ((player.busy >> i) & 1) != 0};
         if (hands[i].tracked) {
             head += hands[i].fist - hands[i].relative;

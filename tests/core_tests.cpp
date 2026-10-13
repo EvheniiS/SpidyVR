@@ -525,7 +525,8 @@ int main() {
         const auto out=rig.update(f,{10,20,30},{1,0,0},true);
         near(length(out.hands[0].orientation.rotate({0,0,-1})-
                     out.swing.hands[0].aim.orientation.rotate({0,0,-1})),0);
-        near(length(out.hands[0].position-out.swing.hands[0].aim.position),0);
+        // The web leaves the shooter on the wrist, not the grip's point.
+        near(length(webShooterPoint(out.grips[0],0)-out.swing.hands[0].aim.position),0,1e-5f);
     });
     test("native grounded prediction never requests gravity through support", [] {
         TestWorld world;world.enabled=false;Swing swing;
@@ -1305,6 +1306,33 @@ int main() {
         out=rig.update(f,{},{0,0,-1},true);
         check(!out.walkRight&&!out.walkForward&&!out.nativeKeys,"resting stick walked");
     });
+    test("WEB SHOOTER: webs leave the palm side of the wrist along the aim, punches land at the knuckles", [] {
+        auto f=trackedFrame();
+        // A controller held level, pointing ahead (-z): the grip frame's -y runs
+        // out past the knuckles, so the hand's grip turns -y onto -z.
+        const Quat grip=Quat::around({1,0,0},1.5707964f);
+        for(unsigned i=0;i<2;++i){f.hands[i].grip.orientation=grip;f.hands[i].aim.position.z=-.58f;}
+        const auto input=trackedSwingInput(f,{});
+        for(unsigned i=0;i<2;++i){
+            const auto& h=input.hands[i];
+            const Vec3 grip0=f.hands[i].grip.position;
+            // 7.5 cm behind the grip toward the forearm, 2 cm to the palm's side.
+            near(h.aim.position.z-grip0.z,.075f,1e-4f);
+            near(h.aim.position.x-grip0.x,i==0?.02f:-.02f,1e-4f);
+            near(length(h.aim.orientation.rotate({0,0,-1})-Vec3{0,0,-1}),0,1e-5f);
+            near(h.fist.z,-.58f,1e-5f);near(fistPoint(h).z,-.58f,1e-5f);
+        }
+        game_swing::Command c;c.serial=1;
+        for(unsigned i=0;i<2;++i){c.hands[i].aim={input.hands[i].aim.position,{0,0,0,1}};c.fists[i]=input.hands[i].fist;}
+        check(game_swing::valid(c),"a version 6 command was rejected");
+        near(game_swing::input(c).hands[1].fist.z,-.58f,1e-5f);
+        auto v4=c;v4.version=5;v4.bytes=game_swing::commandBytesV5;v4.fists[0]=v4.fists[1]={};
+        check(game_swing::valid(v4),"a version 5 command was rejected");
+        const auto old=game_swing::input(v4).hands[0];
+        check(fistPoint(old).z==old.aim.position.z,"a version 5 hand did not punch at its aim");
+        v4.bytes=sizeof(v4);
+        check(!game_swing::valid(v4),"a version 5 command of version 6's size was accepted");
+    });
     test("invalid controller cannot walk or attach a web", [] {
         auto f=trackedFrame();f.hands[0].valid=false;f.hands[0].stickY=1;
         f.hands[1].aim.position.x=std::numeric_limits<float>::quiet_NaN();
@@ -1336,7 +1364,7 @@ int main() {
         near(on.surfaceHeight,0);near(on.surfaceClearance,.5f,.002f);
         // Eyes, hands and the web hands go with the head; the feet stay the anchor.
         near(on.eyes[0][12]-on.head[12],-.032f);near(on.hands[0].position.x-upright.hands[0].position.x,.5f,.002f);
-        near(on.swing.hands[1].aim.position.x-on.hands[1].position.x,0);
+        near(on.swing.hands[1].aim.position.x-webShooterPoint(on.grips[1],1).x,0,1e-5f);
         near(length(on.anchor-feet),0);
         // Off the wall, the head comes back over the feet.
         const auto off=playFor(rig,f,feet,{0,1,0},.6f);
@@ -7454,7 +7482,10 @@ int main() {
         game_swing::Command c;
         c.focused = 1;
         c.serial = 1;
-        check(c.version == 5 && c.bytes == 200 && game_swing::valid(c), "a level version 5 command was rejected");
+        check(c.version == 6 && c.bytes == 224 && game_swing::valid(c), "a level version 6 command was rejected");
+        c.version = 5;
+        c.bytes = game_swing::commandBytesV5;
+        check(game_swing::valid(c), "a level version 5 command was rejected");
         c.version = 4;
         check(game_swing::valid(c), "a level version 4 command was rejected");
         c.version = 3;

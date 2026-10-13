@@ -1184,6 +1184,7 @@ DWORD WINAPI run(void*) {
                             const auto& hand = motion.swing.hands[i];
                             input.hands[i] = {hand.aim, hand.gripRelativeToHead, hand.tracked, hand.trigger,
                                               hand.grip};
+                            input.fists[i] = hand.fist;
                         }
                         check(submitSwing(&input), "Tracked swing input");
                         check(sampleSwing(&swingState), "Native swing feedback");
@@ -1239,7 +1240,7 @@ DWORD WINAPI run(void*) {
                             if (attached && swingState.zips > zipBefore && !grabbing)
                                 runtime.haptic(i, 1);
                             attachedBefore[i] = attached;
-                            webTimes.update(i, attached, swingState.webs[i].anchor, webWrist(motion.hands[i]),
+                            webTimes.update(i, attached, swingState.webs[i].anchor, webShooterPoint(motion.grips[i], i),
                                             frame.predictedDisplayTime);
                         }
                         zipBefore = swingState.zips;
@@ -1395,7 +1396,7 @@ DWORD WINAPI run(void*) {
                                 hand.tracked = motion.swing.hands[i].tracked;
                                 hand.attachedAt = webTimes[i].attachedAt;
                                 hand.anchor = trail ? trailEnds[i] : swingState.webs[i].anchor;
-                                hand.wrist = webWrist(motion.hands[i]);
+                                hand.wrist = webShooterPoint(motion.grips[i], i);
                             }
                             native_webs::submit(webs, 200);
                         }
@@ -1968,11 +1969,12 @@ DWORD WINAPI run(void*) {
                             }
                             auto pose = rendered.hands[hand];
                             pose.position += travel;
+                            const Vec3 shooter = webShooterPoint(rendered.grips[hand], hand) + travel;
                             // With the player's body on the hero, the game draws its own hands.
                             if (!native_body::drawn())
                                 addTrackedHand(vertices, pose, hand, rendered.swing.hands[hand].grip,
                                                web.attached != 0);
-                            shooters[hand] = webWrist(pose);
+                            shooters[hand] = shooter;
                             shooterHands |= 1u << hand;
                             if (gameWeb) {
                                 if (web.attached &&
@@ -1982,13 +1984,13 @@ DWORD WINAPI run(void*) {
                                 }
                                 continue;
                             } else if (web.attached) {
-                                line.start = webWrist(pose);
+                                line.start = shooter;
                                 line.end = web.anchor;
                                 line.slack = web.tension > 0 ? 0.f
                                                              : std::max(web.length - length(line.end - line.start), 0.f);
                                 line.extended = WebAnimation::extended((shown - timing.attachedAt) * 1e-9f);
                                 appendWeb(vertices, line, viewer, pixelAngle);
-                            } else if (WebAnimation::released((shown - timing.releasedAt) * 1e-9f, webWrist(pose),
+                            } else if (WebAnimation::released((shown - timing.releasedAt) * 1e-9f, shooter,
                                                               timing.anchor, line)) {
                                 appendWeb(vertices, line, viewer, pixelAngle);
                             }
