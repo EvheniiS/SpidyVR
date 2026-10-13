@@ -121,6 +121,17 @@ struct SwingConfig {
     // rope in that the body never followed, and the take-off pulled it all
     // in at once at the speed limit (October 11 headset report).
     bool reelFollows = false;
+    // The most a winch speeds the body up round its anchor, times gravity a
+    // second. A rope wound in while the body swings round its end spins it up
+    // as a skater pulling her arms in: by speed^2 / rope x the winch's rate,
+    // at 40 m/s on a 20 m rope (the game's 16 m/s winch) 130 m of height a
+    // second. In the Oct 13 2026 headset session that spin was worth a median
+    // 30 m of height a reel (64 at p90), and fast reels threw the player up.
+    // The winch still draws the body in at its rate and lifts it (a reel from
+    // a hang is as before); only the spin is limited, and it adds nothing
+    // above the speed limit. A hand pulling on its rope is not limited. 0: no
+    // limit.
+    float reelSpin = 0;
     // The swing's pump. While a taut web holds the body up, gravity is
     // swingFall times as strong as it falls and swingRise times as strong as
     // it rises, so a swing may leave faster than it came in. 1 and 1: a swing
@@ -212,7 +223,8 @@ constexpr int maxBends = 6;
 // SwingConfig's defaults. v2: the elastic web (3 m deep at most), the game's
 // swing gravity, the jump off the swing, the speed boost and the momentum
 // meter, from the game's code (Oct 13 2026) and scaled to the player's
-// gravity (SwingConfig::gameFall); and a winch that waits for the body.
+// gravity (SwingConfig::gameFall); and a winch that waits for the body and
+// spins it up gently (reelSpin).
 enum class SwingModel : uint32_t { classic, v2 };
 inline void applySwingModel(SwingConfig& c, SwingModel model) {
     const SwingConfig classic;
@@ -226,6 +238,10 @@ inline void applySwingModel(SwingConfig& c, SwingModel model) {
     c.catchKeep = v2 ? 1.f : classic.catchKeep;
     c.catchDepth = v2 ? 3.f : classic.catchDepth;
     c.reelFollows = v2 || classic.reelFollows;
+    // 6.9 m/s^2 at real gravity: the session's reels would have spun up 11 m
+    // a reel (24 at p90); a reel slower than 0.43 x the rope's length in m/s
+    // (8.6 m/s on 20 m) is untouched.
+    c.reelSpin = v2 ? .7f : classic.reelSpin;
     c.boostTarget = v2 ? 10.f : classic.boostTarget;
     c.momentum = v2 || classic.momentum;
     c.momentumTime = v2 ? 1.5f : classic.momentumTime;
@@ -513,6 +529,7 @@ class Swing {
         Vec3 previous{};
         float pullDistance{}, pullTime{}, obstructed{};
         float winch{}; // how fast this hand's rope shortened in the last step
+        Vec3 drawn{};  // the velocity toward the anchor the winch drew the body in at (reelSpin)
         // Physical webs: the hand from the body's centre, in the world, and
         // how fast it moved there in the latest input sample.
         Vec3 offset{}, rate{};

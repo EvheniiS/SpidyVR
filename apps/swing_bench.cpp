@@ -99,6 +99,7 @@ void print(const char* name, const SwingLedger& l, float g, float apex = 0, floa
         l.elastic / g, l.sling / g, l.pump / g, l.boost / g, l.yank / g, l.jump / g, l.cap / g, l.catches,
         l.deepest, l.momentum);
 }
+float rising; // the last swing's speed up as it let go
 struct Thrown {
     SwingLedger ledger;
     float apex;   // the top of the swing and of the flight after it, above where the swing began
@@ -106,15 +107,17 @@ struct Thrown {
 };
 // One swing: a web shot `pitch` degrees above the way the body goes, held
 // until the body rises at `release` degrees (or `most` seconds), then let go
-// (or, with jump, jumped off), and flown on to the top of its flight.
+// (or, with jump, jumped off), and flown on to the top of its flight. With
+// `reel`, the trigger winds the web in from the frame after it attaches.
 Thrown swing(Swing& s, const OpenWorld& world, Body start, float pitch, float release, bool jump,
-             float most = 9) {
+             float most = 9, bool reel = false) {
     ::start(s, start);
     const Vec3 way = ahead(start.velocity, pitch);
     bool rose = false;
     float top = start.position.y;
     for (float t = 0; t < most; t += frame) {
         Input in = aimed(now(s).position, way, true);
+        in.hands[0].trigger = reel && t > 0 ? 1.f : 0.f;
         const Vec3 v = now(s).velocity;
         rose |= v.y > 1;
         // release 90: held to the top of the swing, where it stops rising.
@@ -136,6 +139,7 @@ Thrown swing(Swing& s, const OpenWorld& world, Body start, float pitch, float re
     }
     const SwingLedger ledger = s.lastSwing();
     const float released = now(s).position.y;
+    rising = now(s).velocity.y;
     float flown = released;
     for (float t = 0; t < 6 && !now(s).grounded; t += frame) {
         top = std::max(top, now(s).position.y);
@@ -197,6 +201,22 @@ void chain(SwingConfig config, float g, bool jump) {
                 s.surges());
     (void)g;
 }
+// The trigger held from the web's attaching through the bottom of the swing
+// until the body rises at 30 degrees (3 s at most): the web shot 45 degrees up
+// ahead, 20 m to the ceiling. reel: what winding the rope in gave (metres of
+// height); up: the speed up as it let go.
+void reelSwing(Swing& s, const OpenWorld& world, float v0, float g) {
+    const float r = 20 * std::sin(3.14159265f / 4);
+    const Body body{{0, ceiling - r, 0}, {v0, 0, 0}, false};
+    const float plain = swing(s, world, body, 45, 30, false, 3).thrown; // the same swing, no trigger
+    const auto t = swing(s, world, body, 45, 30, false, 3, true);
+    const auto& l = t.ledger;
+    std::printf(
+        "  reeling in at %2.0f m/s, 20 m: in %4.1f out %4.1f peak %4.1f up %5.1f apex %+5.1f throw %4.1f "
+        "(%4.1f unreeled) %4.1fs | reel %5.1f pump %5.1f boost %4.1f cap %5.1f\n",
+        v0, l.entry, l.exit, l.peak, rising, t.apex, t.thrown, plain, l.seconds, l.reel / g, l.pump / g,
+        l.boost / g, l.cap / g);
+}
 void yankCatch(SwingConfig config, float g) {
     // A yank toward an anchor ahead, then the rope pulling taut again on the
     // far side: what that second pull takes.
@@ -249,6 +269,8 @@ int main(int argc, char** argv) {
         show("level at 20, held to the top", {{0, 35, 0}, {20, 0, 0}, false}, 90, false);
         show("fall at 20, held to the top", {{0, 40, 0}, {3, -20, 0}, false}, 90, false);
         yankCatch(config, g);
+        for (float v0 : {0.f, 20.f, 30.f, 40.f})
+            reelSwing(s, world, v0, g);
         chain(config, g, false);
         chain(config, g, true);
     }

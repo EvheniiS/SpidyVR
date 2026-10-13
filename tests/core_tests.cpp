@@ -8279,6 +8279,112 @@ int main() {
                                                 std::to_string(change)).c_str());
         }
     });
+    // A web straight up, 20 m, the body going round it at `speed`; with `reel`
+    // the trigger from the second frame, for `seconds` in all, then let go.
+    // Gravity all but off, so only the winch changes the speed round the
+    // anchor; 2.0's spin limit set to `spin` m/s^2.
+    struct Reeled {
+        float around{}, inward{}, rope{}, released{};
+        SwingLedger ledger;
+    };
+    const auto reelRound = [](SwingModel model, float speed, float limit, float spin, bool reel = true) {
+        SwingConfig c;
+        c.maxSpeed = limit;
+        c.reelSpeed = 16; // the game's (game_swing::physicsConfig)
+        applySwingModel(c, model);
+        c.gravity = .01f;
+        if (model == SwingModel::v2)
+            c.reelSpin = spin / c.gravity;
+        spidy::Swing s(c);
+        Ceiling world;
+        s.reset({{0, 40, 0}, {speed, 0, 0}, false});
+        const Quat up = arc({0, 0, -1}, {0, 1, 0});
+        Input in;
+        for (int f = 0; f <= 27; ++f) { // 0.3 s
+            in.hands[0] = {{s.body().position, up}, {}, true, reel && f ? 1.f : 0.f, 1};
+            s.update(1.f / 90, in, world);
+        }
+        Reeled r;
+        const Vec3 radial = normalized(s.body().position - s.webs()[0].anchor);
+        const Vec3 v = s.body().velocity;
+        r.inward = -dot(v, radial);
+        r.around = length(v - radial * dot(v, radial));
+        r.rope = s.webs()[0].length;
+        in.hands[0].grip = in.hands[0].trigger = 0;
+        s.update(1.f / 90, in, world);
+        r.released = length(s.body().velocity) - length(v);
+        r.ledger = s.lastSwing();
+        return r;
+    };
+    test("2.0's winch spins a fast swing up gently; the classic one as a skater does", [&] {
+        // 40 m/s round a 20 m rope wound in at 16 m/s for 0.3 s: to 15.2 m.
+        // The classic winch keeps speed x rope (40 x 20 / 15.2 = 52.6 m/s);
+        // 2.0's adds 7 m/s^2 at most: 2.1 m/s over the same swing unreeled.
+        const auto classic = reelRound(SwingModel::classic, 40, 65, 0);
+        const auto v2 = reelRound(SwingModel::v2, 40, 65, 7);
+        const auto plain = reelRound(SwingModel::v2, 40, 65, 7, false);
+        for (const auto& r : {classic, v2}) {
+            near(r.rope, 20 - 16 * .3f, .2f);
+            near(r.inward, 16, .2f); // drawn in at the winch's rate either way
+            check(std::abs(r.released) < .05f, "letting go mid-reel changed the speed");
+        }
+        check(classic.around > 51.5f, ("classic spun up to " + std::to_string(classic.around)).c_str());
+        const float spin = v2.around - plain.around;
+        check(spin > 1.8f && spin < 2.2f, ("2.0 spun up by " + std::to_string(spin)).c_str());
+        // The ledger: the kick in (16^2 / 2) and the spin, net of the limit.
+        const float kick = 16 * 16 / 2.f;
+        check(v2.ledger.reel > kick && v2.ledger.reel < kick + 120,
+              ("2.0's reel " + std::to_string(v2.ledger.reel)).c_str());
+        check(classic.ledger.reel > kick + 500,
+              ("classic reel " + std::to_string(classic.ledger.reel)).c_str());
+        for (const auto& r : {classic, v2}) {
+            const auto& x = r.ledger;
+            const float change = .5f * (x.exit * x.exit - x.entry * x.entry);
+            const float sum = x.reel - x.rope + x.elastic + x.sling + x.pump + x.boost - x.cap;
+            check(std::abs(change - sum) < 6,
+                  ("the ledger has " + std::to_string(sum) + " for a change of " + std::to_string(change))
+                      .c_str());
+        }
+        check(SwingConfig{}.reelSpin == 0, "the classic winch is limited");
+    });
+    test("2.0's winch adds nothing above the speed limit", [&] {
+        // At 44 m/s the 16 m/s inward leaves sqrt(44^2 - 16^2) = 41.0 round the anchor.
+        const auto r = reelRound(SwingModel::v2, 40, 44, 7);
+        check(r.around < 41.02f && r.around > 40.5f, ("spun up to " + std::to_string(r.around)).c_str());
+        check(r.ledger.cap < 1, ("the speed limit cut " + std::to_string(r.ledger.cap)).c_str());
+    });
+    test("2.0's winch lifts from a hang as the classic one does", [&] {
+        // Straight below the anchor, and hanging off to the side (a slow swing
+        // while it winds in): the limit barely touches a slow reel.
+        for (const float side : {0.f, .5f}) {
+            Body end[2];
+            for (const float spin : {-1.f, 0.f}) { // 2.0 as applied; and with no limit
+                SwingConfig c;
+                c.reelSpeed = 16;
+                applySwingModel(c, SwingModel::v2);
+                if (spin == 0)
+                    c.reelSpin = 0;
+                spidy::Swing s(c);
+                Ceiling world;
+                s.reset({{0, 40, 0}, {}, false});
+                const Quat aim = arc({0, 0, -1}, normalized(Vec3{-side, 1, 0}));
+                for (int f = 0; f <= 45; ++f) {
+                    Input in;
+                    in.hands[0] = {{s.body().position, aim}, {}, true, f ? 1.f : 0.f, 1};
+                    s.update(1.f / 90, in, world);
+                }
+                end[spin == 0] = s.body();
+            }
+            check(end[0].position.y > 45, ("lifted to " + std::to_string(end[0].position.y)).c_str());
+            if (side == 0)
+                near(end[0].velocity.y, 16, .1f);
+            check(length(end[0].velocity - end[1].velocity) < .5f &&
+                      length(end[0].position - end[1].position) < .1f,
+                  ("a slow reel changed by " + std::to_string(length(end[0].velocity - end[1].velocity)) +
+                   " m/s")
+                      .c_str());
+        }
+    });
     std::cout << total - failed << '/' << total << " tests passed\n";
     return failed ? 1 : 0;
 }

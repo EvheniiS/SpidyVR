@@ -70,6 +70,8 @@ Swing::Swing(SwingConfig c) : config_(c) {
             throw std::invalid_argument("Invalid jump off");
     if (!(c.jumpOffSwing >= 0) || !std::isfinite(c.jumpOffSwing))
         throw std::invalid_argument("Invalid jump off");
+    if (!(c.reelSpin >= 0) || !std::isfinite(c.reelSpin))
+        throw std::invalid_argument("Invalid winch spin");
     if (c.catchBounce >= 1 || c.catchKeep > 1 || c.catchFrequency > 10 || c.swingFall > 4 || c.swingRise > 4 ||
         !(c.jumpOffHigh > c.jumpOffMid) || c.jumpOffHigh > 90 || c.momentumHigh > 5 || c.momentumLimit < 1 ||
         c.momentumLimit > 2 || c.momentumGravity > 2 || !(c.momentumTime > 0) || c.momentumTime > 4)
@@ -560,6 +562,7 @@ void Swing::release(int i, EventKind reason) {
     h.reeling = false;
     h.pullDistance = h.pullTime = h.obstructed = h.winch = 0;
     h.stretch = h.stretchSpeed = h.give = 0;
+    h.drawn = {};
     if (was && !webs_[1 - i].attached)
         endSwing();
 }
@@ -1125,6 +1128,40 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             pull[i] += change;
             body_.velocity -= radial * change;
         }
+    // A winch spins the body up round its anchor (reelSpin): the speed it
+    // drew the body in at turns along the swing as the body goes round, by
+    // v w / rope a second, the most in a fast swing. Only that spin is
+    // limited; the body still comes in at the winch's rate, and is lifted as
+    // before. Measured as it happens (the last step's draw, turned), not
+    // estimated: the estimate ran 5% over and slowed a capped swing.
+    for (int i = 0; i < 2 && config_.reelSpin > 0; ++i) {
+        const Vec3 drawn = hands_[i].drawn;
+        hands_[i].drawn = {};
+        const float give = std::max(0.f, hands_[i].give); // a stretching rope's end goes out
+        if (!held[i] || !webs_[i].attached)
+            continue;
+        const Vec3 delta = body_.position - ropes[i].anchor;
+        const float dist = length(delta);
+        if (dist < 1e-3f)
+            continue;
+        const Vec3 radial = delta / dist;
+        if (hands_[i].winch > give)
+            hands_[i].drawn = radial * -((hands_[i].winch - give) * follow(i, radial));
+        const Vec3 along = body_.velocity - radial * dot(body_.velocity, radial);
+        const float speed = length(along);
+        const float spun = speed < 1e-3f ? 0.f : dot(drawn, along / speed);
+        if (spun <= 0)
+            continue;
+        // Nothing above the speed limit: the room under it, with the speed
+        // across the swing (toward the anchor) as it is.
+        const float across = std::max(0.f, dot(body_.velocity, body_.velocity) - speed * speed);
+        const float room = std::sqrt(std::max(0.f, limit_ * limit_ - across)) - (speed - spun);
+        const float allowed = std::clamp(std::min(config_.reelSpin * config_.gravity * dt, room), 0.f, spun);
+        const Vec3 unlimited = body_.velocity;
+        body_.velocity -= along * (std::min(spun - allowed, speed) / speed);
+        if (counting())
+            swing_.reel += gained(unlimited, body_.velocity); // the reel's, net of the limit
+    }
     // What an elastic catch took from the rope's way out goes on along the
     // swing: along the body's way round the anchor, or down it from rest.
     for (int i = 0; i < 2; ++i) {
