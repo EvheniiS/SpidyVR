@@ -561,6 +561,8 @@ inline std::vector<std::wstring> sessionArguments(const SessionOptions& options,
         args.emplace_back(L"--flips");
     if (options.triggerWebs)
         args.emplace_back(L"--trigger-webs");
+    if (options.controllerAim)
+        args.emplace_back(L"--controller-aim");
     if (!options.standOnWalls)
         args.emplace_back(L"--no-stand-on-walls");
     if (!options.physicalWebs)

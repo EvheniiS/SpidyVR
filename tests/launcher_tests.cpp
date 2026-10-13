@@ -231,6 +231,11 @@ int main() {
         args = sessionArguments(options, L"r.json", L"", L"");
         check(args.size() == 8 && args[7] == L"--trigger-webs", "the web button on the trigger");
         options = {};
+        check(!options.controllerAim, "controller aim in a new launcher");
+        options.controllerAim = true;
+        args = sessionArguments(options, L"r.json", L"", L"");
+        check(args.size() == 8 && args[7] == L"--controller-aim", "webs aimed with the controller");
+        options = {};
         check(options.standOnWalls, "no standing on walls in a new launcher");
         args = sessionArguments(options, L"r.json", L"", L"");
         check(args.size() == 7, "standing on walls, the default, said to the session");
