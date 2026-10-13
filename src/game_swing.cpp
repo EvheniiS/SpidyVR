@@ -39,6 +39,7 @@ SRWLOCK lifecycle = SRWLOCK_INIT, control = SRWLOCK_INIT, output = SRWLOCK_INIT,
 std::atomic<bool> enabled{};
 // coasting: owned flight going on without input (coast()).
 bool started{}, owned{}, initialized{}, coasting{};
+uint32_t swingModel{}; // the solver's SwingModel (Settings::model)
 uint64_t deadline{}, inputDeadline{}, motionSerial{}, lastStep{}, worldIdentity{};
 // Step length the last prediction assumed, and the native step it was made in.
 float predictedDt{};
@@ -556,7 +557,11 @@ void visit(const native_rays::QueryContext& world) {
         d.misses += event.kind == EventKind::Miss;
         d.obstructed += event.kind == EventKind::Obstructed;
         d.trackingLost += event.kind == EventKind::TrackingLost;
+        d.catches += event.kind == EventKind::Catch;
+        d.jumpOffs += event.kind == EventKind::JumpOff;
     }
+    d.model = swingModel;
+    d.last = solver.lastSwing();
     for (unsigned i = 0; i < 2; ++i) {
         const auto& w = solver.webs()[i];
         d.webs[i] = {w.attached, static_cast<uint32_t>(w.surface), w.anchor, w.length, w.tension};
@@ -609,6 +614,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidySwingStart(void* input) {
             break;
         started = true;
         solver = Swing(physicsConfig(config));
+        swingModel = 0; // classic, until the settings say otherwise
         QueryPerformanceFrequency(&frequency);
         deadline = config.durationMs ? GetTickCount64() + config.durationMs : UINT64_MAX;
         game_grab::start(config.base, reinterpret_cast<game_grab::Call>(driveMotion),
@@ -664,13 +670,14 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidySwingSettings(void* input) {
     Settings s;
     uint32_t header[3]{};
     if (!copy(header, input, sizeof(header)) ||
-        (header[2] != settingsBytesV3 && header[2] != settingsBytesV4 && header[2] != sizeof(s)) ||
+        (header[2] != settingsBytesV3 && header[2] != settingsBytesV4 && header[2] != settingsBytesV5 &&
+         header[2] != sizeof(s)) ||
         !copy(&s, input, header[2]) || s.magic != 0x53575354 ||
         !((s.version == 3 && s.bytes == settingsBytesV3) || (s.version == 4 && s.bytes == settingsBytesV4) ||
-          (s.version == 5 && s.bytes == sizeof(s))) ||
+          (s.version == 5 && s.bytes == settingsBytesV5) || (s.version == 6 && s.bytes == sizeof(s))) ||
         s.grab > 1 || !std::isfinite(s.maxSpeed) || s.maxSpeed <= 0 || s.maxSpeed > motionSpeedLimit ||
         s.airWebs > 1 || !std::isfinite(s.gravity) || s.gravity < 0 || s.gravity > maxGravity || s.walls > 1 ||
-        s.physical > 1)
+        s.physical > 1 || s.model > static_cast<uint32_t>(SwingModel::v2) || s.reserved)
         return 2001;
     AcquireSRWLockExclusive(&lifecycle);
     DWORD result{};
@@ -687,6 +694,10 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidySwingSettings(void* input) {
             solver.allowWalls(s.walls != 0);
         if (s.version >= 5)
             solver.allowPhysical(s.physical != 0);
+        if (s.version >= 6) {
+            solver.setModel(static_cast<SwingModel>(s.model));
+            swingModel = s.model;
+        }
         // A swing started without the grab (-NoWebGrab) offers it from now on.
         if (s.grab && !game_grab::offering() && driveMotion && sampleDriven) {
             config.grabKinds = game_grab::movableKinds;

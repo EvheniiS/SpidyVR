@@ -43,7 +43,7 @@
 #include <mmsystem.h>
 using namespace spidy;
 struct XrConfig {
-    uint32_t magic = 0x53585243, version = 25, bytes = sizeof(XrConfig), pid{};
+    uint32_t magic = 0x53585243, version = 26, bytes = sizeof(XrConfig), pid{};
     // record and mover are no longer used: VR starts with the game, before
     // there is a player, and finds each new player itself (game_player).
     uint64_t base{}, queue{}, bridgeModule{}, rayModule{}, motionModule{}, record{}, mover{};
@@ -107,8 +107,9 @@ struct XrConfig {
     // and a spare word.
     uint32_t screenDepth = 2, spare{};
     // Webs go along the controllers' pointers (1) or the hands' line (0;
-    // handLine); then padding.
-    uint32_t controllerAim{}, reserved{};
+    // handLine); the swing model (SwingModel: 0 classic, 1 2.0; the
+    // launcher's SWING MODEL).
+    uint32_t controllerAim{}, swingModel{};
 };
 static_assert(sizeof(XrConfig) == 672);
 // Why the last frame had no gameplay (XrData::gate bits).
@@ -585,7 +586,7 @@ DWORD WINAPI run(void*) {
         uint64_t zipBefore{};
         // Walls the swing took the player onto, and jumps off them, by the
         // previous frame.
-        uint32_t wallsBefore{}, wallJumpsBefore{};
+        uint32_t wallsBefore{}, wallJumpsBefore{}, jumpOffsBefore{};
         // Punches each hand had landed by the previous frame.
         bool punchStarted{};
         uint64_t punchesBefore[2]{};
@@ -773,6 +774,7 @@ DWORD WINAPI run(void*) {
                 s.gravity = vr_settings::gravity(values.weight);
                 s.walls = !(config.options & 16384);
                 s.physical = values.physicalWebs;
+                s.model = config.swingModel;
                 if (const auto code = swingSettings(&s)) {
                     const auto text = "VR settings: the swing did not take them (" + std::to_string(code) + ")";
                     message(3, 0, text.c_str());
@@ -1261,13 +1263,18 @@ DWORD WINAPI run(void*) {
                         catchesBefore = grabState.catches;
                         // Onto a wall, and off it with a jump: both hands feel it.
                         if (input.focused && swingState.status &&
-                            (swingState.walls > wallsBefore || swingState.wallJumps > wallJumpsBefore)) {
-                            const float pulse = swingState.wallJumps > wallJumpsBefore ? .6f : .45f;
+                            (swingState.walls > wallsBefore || swingState.wallJumps > wallJumpsBefore ||
+                             swingState.jumpOffs > jumpOffsBefore)) {
+                            // A jump off a swing (swing model 2.0) feels like one off a wall.
+                            const float pulse =
+                                swingState.wallJumps > wallJumpsBefore || swingState.jumpOffs > jumpOffsBefore ? .6f
+                                                                                                                : .45f;
                             runtime.haptic(0, pulse);
                             runtime.haptic(1, pulse);
                         }
                         wallsBefore = swingState.walls;
                         wallJumpsBefore = swingState.wallJumps;
+                        jumpOffsBefore = swingState.jumpOffs;
                         // Every landed blow, a fist's or a web strike's: the hand
                         // that threw it kicks, as hard and as long as the blow was
                         // (a jab 60 ms, a blow that sends him flying 180 ms and the
@@ -2336,7 +2343,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
     if (worker)
         return 1000; // one bounded XR session per process during validation
     if (!read(reinterpret_cast<uintptr_t>(input), &config, sizeof(config)) || config.magic != 0x53585243 ||
-        config.version != 25 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
+        config.version != 26 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
         config.runtime[std::size(config.runtime) - 1] ||
         config.base != reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr)) ||
         !GetModuleHandleW(L"Spider-Man.exe") || !config.queue || !config.bridgeModule || !config.rayModule ||
@@ -2344,7 +2351,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
         !validEyeUpscale(config.upscale) || !validMonitorRate(config.monitorRate) ||
         config.screenSize > 2 || config.screenDepth > 3 || config.spare || config.smoothTurn > 360 ||
         config.hud > 3 || config.flipSpeed < 90 ||
-        config.flipSpeed > 480 || config.controllerAim > 1 || config.reserved || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
+        config.flipSpeed > 480 || config.controllerAim > 1 || config.swingModel > 1 || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
         config.swingSpeed > 65 || (config.durationMs && config.durationMs < 2000) || config.durationMs > 25000 ||
         (config.eyeSize && !validEyeSize(config.eyeSize)) || !validRenderScale(config.renderScale) ||
         (config.eyeSize && config.renderScale != 100) || config.weight < 40 || config.weight > 300)

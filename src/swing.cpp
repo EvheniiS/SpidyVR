@@ -54,10 +54,15 @@ Swing::Swing(SwingConfig c) : config_(c) {
         c.anchorClearance,  c.wallStep,        c.wallCarry,       c.wallWalkSpeed,   c.wallAcceleration,   c.wallBrake,
         c.wallJumpOut,      c.wallJumpUp,      c.wallJumpPause,   c.wallGrace,          c.crestSeconds,
         c.crestPush,        c.crestHop,        c.diveGravity,     c.diveSpeed,       c.diveSpeedRamp,
-        c.diveSpeedMax,     c.overspeedDecay};
+        c.diveSpeedMax,     c.overspeedDecay,  c.catchMin,        c.catchFrequency,  c.catchBounce,
+        c.catchKeep,        c.swingFall,       c.swingRise,       c.jumpOffUp[0],    c.jumpOffUp[1],
+        c.jumpOffUp[2],     c.jumpOffBoost[0], c.jumpOffBoost[1], c.jumpOffBoost[2], c.jumpOffMid};
     for (float v : nonnegative)
         if (!std::isfinite(v) || v < 0)
             throw std::invalid_argument("Invalid swing configuration");
+    if (c.catchBounce >= 1 || c.catchKeep > 1 || c.catchFrequency > 10 || c.swingFall > 4 || c.swingRise > 4 ||
+        !(c.jumpOffHigh > c.jumpOffMid) || c.jumpOffHigh > 90)
+        throw std::invalid_argument("Invalid elastic web, swing gravity or jump off");
     if (c.minRope > c.maxRange || c.fixedStep > .02f)
         throw std::invalid_argument("Invalid rope range or fixed timestep");
     if (!std::isfinite(c.wallReach) || c.wallReach < c.wallClearance || c.wallReach > 10 || c.wallSlope >= 1)
@@ -180,6 +185,9 @@ void Swing::setGravity(float gravity) {
     if (!std::isfinite(gravity) || gravity < 0)
         throw std::invalid_argument("Invalid swing gravity");
     config_.gravity = gravity;
+}
+void Swing::setModel(SwingModel model) {
+    applySwingModel(config_, model);
 }
 void Swing::allowAirAnchors(bool allowed) {
     config_.airAnchors = allowed;
@@ -522,14 +530,102 @@ void Swing::reset(Body b) {
     limit_ = config_.maxSpeed;
     carry_ = diveTime_ = 0;
     diving_ = false;
+    swing_ = lastSwing_ = {};
+    swinging_ = false;
 }
 void Swing::release(int i, EventKind reason) {
-    if (webs_[i].attached)
+    const bool was = webs_[i].attached;
+    if (was)
         events_.push_back({reason, i, .2f});
     webs_[i] = {};
-    hands_[i].zipUsed = false;
-    hands_[i].reeling = false;
-    hands_[i].pullDistance = hands_[i].pullTime = hands_[i].obstructed = hands_[i].winch = 0;
+    auto& h = hands_[i];
+    h.zipUsed = false;
+    h.reeling = false;
+    h.pullDistance = h.pullTime = h.obstructed = h.winch = 0;
+    h.stretch = h.stretchSpeed = h.give = 0;
+    if (was && !webs_[1 - i].attached)
+        endSwing();
+}
+void Swing::beginSwing() {
+    swing_ = {};
+    swing_.swings = lastSwing_.swings + 1;
+    swing_.entry = swing_.peak = length(body_.velocity);
+    swing_.fall = -body_.velocity.y;
+    swingStartY_ = body_.position.y;
+    swinging_ = true;
+}
+void Swing::endSwing() {
+    if (!swinging_)
+        return;
+    swing_.exit = length(body_.velocity);
+    swing_.drop = swingStartY_ - body_.position.y;
+    lastSwing_ = swing_;
+    swinging_ = false;
+}
+std::array<float, 2> Swing::stretchRopes(float dt) {
+    std::array<float, 2> sling{};
+    const float omega = 6.2831853f * config_.catchFrequency;
+    // A damped spring that takes a speed at its length comes back to it at
+    // exp(-zeta pi / sqrt(1 - zeta^2)) of that speed: catchBounce.
+    const float bounce = std::max(config_.catchBounce, 1e-3f), lnBounce = std::log(bounce);
+    const float zeta = -lnBounce / std::sqrt(9.8696044f + lnBounce * lnBounce);
+    // The share of the speed a catch takes that the bounce does not give
+    // back, kept along the swing: with all of it the catch keeps the speed.
+    const float keep = config_.catchKeep * (1 - bounce * bounce);
+    for (int i = 0; i < 2; ++i) {
+        auto& h = hands_[i];
+        auto& w = webs_[i];
+        h.give = 0;
+        if (!w.attached || omega <= 0) {
+            h.stretch = h.stretchSpeed = 0;
+            continue;
+        }
+        // To what the rope holds the body to (the hand's point with physical webs).
+        const Vec3 delta = body_.position - hold(i);
+        const float dist = length(delta);
+        if (dist < 1e-5f)
+            continue;
+        const Vec3 radial = delta / dist;
+        if (h.stretch <= 0 && h.stretchSpeed == 0) {
+            // The rope pulled taut this step, after slack or as it attached,
+            // with the body going away from the rope's end faster than
+            // catchMin (a reeled rope's end comes in at its winch). Going
+            // round the anchor on a rope turns the velocity outward by
+            // speed^2 dt / distance each step: that is the swing, not a catch.
+            const Vec3 along = body_.velocity - radial * dot(body_.velocity, radial);
+            const float out = dot(body_.velocity, radial) + h.winch - dot(along, along) * dt / dist;
+            if (h.taut || dist < w.length - nearlyTaut || out <= config_.catchMin)
+                continue;
+            h.stretch = std::max(0.f, dist - w.length);
+            h.stretchSpeed = out;
+            w.length += h.stretch;
+            h.give = out; // the rope's end goes out with the body: nothing is cut
+            if (swinging_)
+                ++swing_.catches;
+            events_.push_back({EventKind::Catch, i, std::clamp(out / 20, .2f, 1.f)});
+            continue;
+        }
+        // Stretching, the spring slows the rope's end; springing back, it
+        // carries the body in (Web::length follows it, the constraint the body).
+        const float before = h.stretchSpeed;
+        h.stretchSpeed += (-omega * omega * h.stretch - 2 * zeta * omega * h.stretchSpeed) * dt;
+        float next = h.stretch + h.stretchSpeed * dt;
+        if (before > 0 && dist >= w.length - .05f) {
+            const float after = std::max(0.f, h.stretchSpeed);
+            sling[i] = keep * .5f * (before * before - after * after);
+        }
+        if (next <= 0) {
+            next = 0; // back at its length: the catch is over
+            h.stretchSpeed = 0;
+        }
+        const float change = next - h.stretch;
+        h.stretch = next;
+        w.length = std::max(config_.minRope, w.length + change);
+        h.give = change / dt;
+        if (swinging_)
+            swing_.deepest = std::max(swing_.deepest, next);
+    }
+    return sling;
 }
 bool Swing::blocks(const RayHit& hit, Vec3 from, Vec3 anchor, bool bend) const {
     const float clearance =
@@ -658,9 +754,13 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
             release(i);
         if (!w.attached && shoot) {
             if (const auto fired = shot(h.aim, body_.position, world); fired.web) {
+                if (!webs_[1 - i].attached)
+                    beginSwing();
                 w = *fired.web;
                 // To the hand that holds it.
                 w.length = std::max(config_.minRope, length(hold(i) - body_.position));
+                s.taut = false;
+                s.stretch = s.stretchSpeed = s.give = 0;
                 // The swing carries the fall it catches (fallCarry).
                 carry_ = std::max(carry_, config_.maxSpeed * fallCarry(-body_.velocity.y));
                 s.triggerReleased = false;
@@ -682,6 +782,7 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                 // invisible slack before the player feels any response.
                 w.length = std::min(w.length, std::max(std::min(config_.minRope, w.length),
                                                        length(hold(i) - body_.position)));
+                s.stretch = s.stretchSpeed = 0; // the winch takes the rope as it is
             }
             s.reeling = reel;
             // Motion must be both fast and deliberate within a short window.
@@ -699,8 +800,13 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                     const float speed = pull / dt;
                     if (s.pullDistance >= config_.yankDistance && speed >= config_.yankSpeed) {
                         const float impulse = std::min(speed * config_.zipMultiplier, config_.maxZipImpulse);
+                        const Vec3 before = body_.velocity;
                         body_.velocity =
                             limited(body_.velocity + normalized(w.anchor - body_.position) * impulse, limit_);
+                        if (swinging_) {
+                            swing_.yank += gained(before, body_.velocity);
+                            ++swing_.yanks;
+                        }
                         sinceZip_ = 0;
                         zipSpeed_ = length(body_.velocity);
                         zipDirection_ = normalized(Vec3{body_.velocity.x, 0, body_.velocity.z});
@@ -798,6 +904,8 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
                 events_.push_back({EventKind::PointLaunch, -1, 1});
             }
             body_.grounded = false;
+        } else if (webs_[0].attached || webs_[1].attached) {
+            jumpOff(in);
         }
         jumpQueued_ = false;
     }
@@ -810,8 +918,11 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         body_.grounded = false;
     } else {
         Vec3 steering = finite(in.move) ? limited(Vec3{in.move.x, 0, in.move.z}, 1) : Vec3{};
+        const Vec3 unsteered = body_.velocity;
         body_.velocity +=
             steering * ((body_.grounded ? config_.groundAcceleration : config_.airAcceleration) * dt);
+        if (swinging_ && !body_.grounded)
+            swing_.steer += gained(unsteered, body_.velocity);
         if (body_.grounded) {
             const float damping = std::exp(-5 * dt);
             body_.velocity.x *= damping;
@@ -820,16 +931,30 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         // A native prediction has no sweep to cancel gravity at the floor. Keep
         // the measured support until a jump or rope pull actually lifts the body.
         const bool supported = !collision && body_.grounded && body_.velocity.y <= 0;
-        if (supported)
+        if (supported) {
             body_.velocity.y = 0;
-        else
-            body_.velocity.y -= (diving_ ? std::max(config_.gravity, config_.diveGravity) : config_.gravity) * dt;
+        } else {
+            const float g = diving_ ? std::max(config_.gravity, config_.diveGravity) : config_.gravity;
+            // The swing's pump: a taut web holding the body up changes
+            // gravity on the way down and on the way up.
+            bool hung{};
+            for (int i = 0; i < 2; ++i)
+                hung |= webs_[i].attached && webs_[i].anchor.y > body_.position.y &&
+                        length(body_.position - hold(i)) >= webs_[i].length - .15f;
+            const float swung = hung ? g * (body_.velocity.y < 0 ? config_.swingFall : config_.swingRise) : g;
+            if (swinging_)
+                swing_.pump -= (swung - g) * body_.velocity.y * dt;
+            body_.velocity.y -= swung * dt;
+        }
         if (crest_ > 0) {
             // Over a wall's top edge: on over the roof behind it.
             crest_ -= dt;
             body_.velocity -= crestNormal_ * (config_.crestPush * dt);
         }
+        const Vec3 uncapped = body_.velocity;
         body_.velocity = limited(body_.velocity, limit_);
+        if (swinging_)
+            swing_.cap -= gained(uncapped, body_.velocity);
         body_.grounded = supported;
     }
     move(body_.position + body_.velocity * dt, collision);
@@ -870,6 +995,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         hands_[i].winch = (webs_[i].length - lengths[i]) / dt;
         webs_[i].length = lengths[i];
     }
+    const auto sling = stretchRopes(dt);
     // What each rope holds the body to: its anchor, or with physical webs
     // the point that keeps the hand on it.
     const Rope ropes[2] = {{hold(0), webs_[0].length}, {hold(1), webs_[1].length}};
@@ -879,6 +1005,8 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
     // Unilateral, tension-only constraints. Slack rope never pushes the player.
     // Alternate order to reduce left/right bias with two simultaneous ropes.
     float pull[2]{}; // speed each rope has taken out of the body in this step
+    float cut[2]{}, cutEnergy[2]{}; // the body's own outward speed each cut, and what that took
+    bool held[2]{};                 // whether each rope held the body in this step
     for (int pass = 0; pass < 8; ++pass)
         for (int j = 0; j < 2; ++j) {
             const int i = (pass % 2) ? 1 - j : j;
@@ -890,21 +1018,75 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             if (dist < w.length - nearlyTaut || dist < 1e-5f)
                 continue;
             const Vec3 radial = delta / dist;
+            held[i] = true;
             if (dist > w.length)
                 move(ropes[i].anchor + radial * w.length, collision);
             // A taut rope that is being reeled carries the body inward at the
             // winch rate. With the pull applied to position only, the velocity
             // never held it, and letting go mid-reel stopped the body dead.
-            // A hand that pulls on its rope does the same (physical webs).
-            const float outward = dot(body_.velocity, radial) + hands_[i].winch * follow(i, radial) +
+            // A hand that pulls on its rope does the same (physical webs). An
+            // elastic web's end goes out as it stretches (give) and in as it
+            // springs back.
+            const float own = dot(body_.velocity, radial);
+            const float outward = own + (hands_[i].winch - hands_[i].give) * follow(i, radial) +
                                   dot(hands_[i].rate, radial);
             // Once the other rope has pulled too, this one may have taken more
             // than the two need together. It hands that back, never more than
             // it took: kept, the surplus pushed the body sideways every step.
             const float change = std::max(outward, -pull[i]);
             pull[i] += change;
+            const Vec3 before = body_.velocity;
             body_.velocity -= radial * change;
+            if (swinging_) {
+                const float e = gained(before, body_.velocity);
+                if (hands_[i].give != 0)
+                    swing_.elastic += e;
+                else if (e > 0)
+                    swing_.reel += e;
+                else
+                    swing_.rope -= e;
+                // Going round the anchor turns the velocity out by this much
+                // a step: the swing, not a snap.
+                const float turn = std::max(0.f, dot(before, before) - own * own) * dt / dist;
+                if (own > turn && change > 0) {
+                    cut[i] += std::min(own - turn, change);
+                    cutEnergy[i] -= std::min(e, 0.f);
+                }
+            }
         }
+    // What an elastic catch took from the rope's way out goes on along the
+    // swing: along the body's way round the anchor, or down it from rest.
+    for (int i = 0; i < 2; ++i) {
+        if (sling[i] <= 0 || !webs_[i].attached)
+            continue;
+        const Vec3 delta = body_.position - hold(i);
+        if (length(delta) < 1e-3f)
+            continue;
+        const Vec3 radial = normalized(delta);
+        Vec3 along = body_.velocity - radial * dot(body_.velocity, radial);
+        if (length(along) < .5f)
+            along = Vec3{0, -1, 0} + radial * radial.y;
+        if (length(along) < .05f)
+            continue;
+        const Vec3 way = normalized(along), before = body_.velocity;
+        const float speed = dot(body_.velocity, way);
+        body_.velocity += way * (std::sqrt(std::max(0.f, speed * speed + 2 * sling[i])) - speed);
+        body_.velocity = limited(body_.velocity, limit_);
+        if (swinging_)
+            swing_.sling += gained(before, body_.velocity);
+    }
+    for (int i = 0; i < 2; ++i) {
+        hands_[i].taut = held[i];
+        // A rigid rope that pulled taut and cut the body's speed at once: a snap.
+        if (swinging_ && cut[i] > config_.catchMin) {
+            ++swing_.snaps;
+            swing_.snapLoss += cutEnergy[i];
+        }
+    }
+    if (swinging_) {
+        swing_.seconds += dt;
+        swing_.peak = std::max(swing_.peak, length(body_.velocity));
+    }
     // A web may pull along a wall or off it, never through it.
     if (wall_.on)
         holdWall(dt, wallBefore, collision);
@@ -912,6 +1094,34 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         webs_[i].tension = webs_[i].attached ? pull[i] / dt : 0;
     if (body_.grounded && !wasGrounded)
         sinceLanding_ = 0;
+}
+void Swing::jumpOff(const Input& in) {
+    const Vec3 v = body_.velocity;
+    const float speed = length(v);
+    // The swing's phase by the velocity's pitch: 0 level or falling, 1 at
+    // jumpOffMid degrees up, 2 from jumpOffHigh.
+    const float pitch = speed > .5f ? std::asin(std::clamp(v.y / speed, -1.f, 1.f)) * 57.29578f : 0.f;
+    const float mid = config_.jumpOffMid, high = config_.jumpOffHigh;
+    const float band = pitch <= 0 ? 0.f : pitch < mid ? pitch / mid : pitch < high ? 1 + (pitch - mid) / (high - mid) : 2.f;
+    const int low = std::min(1, static_cast<int>(band));
+    const auto at = [&](const float (&values)[3]) { return values[low] + (values[low + 1] - values[low]) * (band - low); };
+    const float up = at(config_.jumpOffUp), boost = at(config_.jumpOffBoost);
+    if (up <= 0 && boost <= 0)
+        return; // the classic swing: a jump does nothing on a web
+    Vec3 way = normalized(Vec3{v.x, 0, v.z});
+    if (length(Vec3{v.x, 0, v.z}) < 1)
+        way = finite(in.move) && length(in.move) > .1f ? normalized(Vec3{in.move.x, 0, in.move.z}) : Vec3{};
+    Vec3 next = v + way * boost;
+    next.y = std::max(next.y, up);
+    next = limited(next, limit_);
+    if (swinging_) {
+        swing_.jump += gained(v, next);
+        ++swing_.jumpOff;
+    }
+    body_.velocity = next;
+    for (int i = 0; i < 2; ++i)
+        release(i);
+    events_.push_back({EventKind::JumpOff, -1, std::clamp(band / 2, .4f, 1.f)});
 }
 void Swing::update(float seconds, const Input& input, const World& world) {
     events_.clear();

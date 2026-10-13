@@ -1276,6 +1276,9 @@ def main():
     p.add_argument('--trigger-webs', action='store_true',
                    help='The trigger shoots and holds webs, and the grip reels in and shoots web balls (the two '
                         'swapped)')
+    p.add_argument('--swing-model', type=int, default=0, choices=(0, 1),
+                   help='The swing: 0 classic (0.2.11), 1 2.0 (an elastic web that keeps the speed of a fall it catches, '
+                        'a swing that leaves faster than it came in, A jumps off a swing)')
     p.add_argument('--controller-aim', action='store_true',
                    help="Webs go where the controllers point, as VR pointers, instead of along the hands' line "
                         '(wrist to middle fingers, as Spider-Man shoots)')
@@ -1344,6 +1347,8 @@ def main():
         p.error('Use a weight of 40..300% of real gravity')
     if not 90 <= a.flip_speed <= 480:
         p.error('Use a flip speed of 90..480 degrees a second')
+    if a.swing_model not in (0, 1):
+        p.error('Use swing model 0 (classic) or 1 (2.0)')
     if (a.eye_height == 0) != (a.arm_length == 0) or a.eye_height and (
             not EYE_HEIGHTS_MM[0] <= a.eye_height <= EYE_HEIGHTS_MM[1] or
             not ARM_LENGTHS_MM[0] <= a.arm_length <= ARM_LENGTHS_MM[1]):
@@ -1479,7 +1484,7 @@ def session(a, startup):
         reflections, reflections_line = eye_reflections(saved.get('ScreenSpaceReflections'), a.no_eye_reflections,
                                                         saved.get('RTReflections', 0))
         game_view, game_view_line = ray_traced_view(saved.get('RTReflections', 0))
-        config = struct.pack('<4I7Q2IfI', 0x53585243, 25, 672, game.pid, game.base, queue,
+        config = struct.pack('<4I7Q2IfI', 0x53585243, 26, 672, game.pid, game.base, queue,
                              bridge_module, ray_module, motion_module, 0, 0,
                              int(a.seconds*1000), a.size, a.swing_speed,
                              int(a.capture_images) | (2 if a.overlay_webs else 0) |
@@ -1496,7 +1501,7 @@ def session(a, startup):
             runtime_path(manifest) + struct.pack('<16I', a.snap_turn, a.haptics, a.screen_size, a.smooth_turn,
                                                  a.render_scale, a.weight, a.eye_height, a.arm_length, a.hud,
                                                  a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth, 0,
-                                                 int(a.controller_aim), 0)
+                                                 int(a.controller_aim), a.swing_model)
         startup.stage = 'starting VR'
         code = call_with_payload(process, xr['SpidyXrStart'], config)
         if code:
@@ -1506,6 +1511,8 @@ def session(a, startup):
         samples = deque(maxlen=12000)
         ray_samples = deque(maxlen=12000)
         swing_samples = deque(maxlen=12000)
+        # Each swing that ended, once: the solver's ledger of what it did to the speed (tools/analyze_swings.py).
+        swing_ledger = deque(maxlen=4000)
         # The web grab: a sample when a counter or a hand's grab changes, else once a second.
         grab_samples = deque(maxlen=12000)
         motion_samples = deque(maxlen=12000)
@@ -1566,7 +1573,8 @@ def session(a, startup):
                         game_settings_refused=startup.fields.get('game_settings_refused'),
                         xr_runtime=runtime, motion_hash=motion_hash,
                         xr_hash=xr_hash, ray_hash=ray_hash, samples=list(samples),
-                        swing_samples=list(swing_samples), motion_samples=list(motion_samples),
+                        swing_samples=list(swing_samples), swings=list(swing_ledger), swing_model=a.swing_model,
+                        motion_samples=list(motion_samples),
                         grab_samples=list(grab_samples), body=body, punch=punch,
                         punch_samples=list(punch_samples), strikes=strikes, strike_samples=list(strike_samples),
                         ropes=ropes, steam_guard=steam,
@@ -1718,6 +1726,10 @@ def session(a, startup):
                         ray_samples.append(aim)
                     swing = swing_snapshot(game,rays['SpidySwingData'])
                     if swing and swing['steps'] and (not swing_samples or swing['steps'] != swing_samples[-1]['steps']):
+                        last_swing = swing.pop('last_swing')
+                        if last_swing['swings'] and (not swing_ledger or last_swing['swings'] != swing_ledger[-1]['swings']):
+                            last_swing['qpc'] = swing['qpc']
+                            swing_ledger.append(last_swing)
                         swing_samples.append(swing)
                     grab = grab_snapshot(game, rays['SpidyGrabData'])
                     if grab:
@@ -1798,7 +1810,7 @@ def session(a, startup):
             ray_hash=ray_hash, ray_samples=list(ray_samples), rays=ray_snapshot(game, rays['SpidyRayData']),
             motion_hash=motion_hash, swing_speed=a.swing_speed, vr_settings=settings_start, xr_runtime=runtime,
             game_settings_refused=startup.fields.get('game_settings_refused'),
-            swing_samples=list(swing_samples),
+            swing_samples=list(swing_samples), swings=list(swing_ledger), swing_model=a.swing_model,
             grab_samples=list(grab_samples), grab=grab_snapshot(game, rays['SpidyGrabData']),
             body=body_snapshot(game, xr['SpidyBodyData']) or body,
             punch=punch_snapshot(game, rays['SpidyPunchData']) or punch, punch_samples=list(punch_samples),

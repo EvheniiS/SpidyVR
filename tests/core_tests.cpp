@@ -7878,6 +7878,129 @@ int main() {
               "another class was read as a body");
     });
 #endif
+    // Swing model 2.0 (applySwingModel): the elastic web, the swing's pump,
+    // the jump off a swing; and the swing ledger that measures them.
+    struct Ceiling : World {
+        std::optional<RayHit> raycast(Vec3 o, Vec3 d, float range) const override {
+            if (d.y <= 1e-4f)
+                return {};
+            const float t = (60 - o.y) / d.y;
+            if (t <= 0 || t > range)
+                return {};
+            return RayHit{o + d * t, {0, -1, 0}, 1, true};
+        }
+        MoveResult sweep(Vec3, Vec3 to, float) const override {
+            return {to, {}, false};
+        }
+        bool exists(std::uint64_t id) const override {
+            return id == 1;
+        }
+    };
+    // A web shot 45 degrees up ahead (+x) from a body going +x at 20 m/s: it
+    // goes slack as the body flies toward the anchor, and pulls taut again
+    // past it. Held for `seconds`, then let go (or, with jump, jumped off).
+    const auto swingAhead = [](SwingModel model, float seconds, bool jump = false) {
+        SwingConfig c;
+        c.maxSpeed = 40;
+        applySwingModel(c, model);
+        spidy::Swing s(c);
+        Ceiling world;
+        s.reset({{0, 35, 0}, {20, 0, 0}, false});
+        const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+        float deepest = 0, lengthAtAttach = 0;
+        for (float t = 0; t < seconds; t += 1.f / 90) {
+            Input in;
+            in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+            s.update(1.f / 90, in, world);
+            if (!lengthAtAttach)
+                lengthAtAttach = s.webs()[0].length;
+            deepest = std::max(deepest, s.stretch(0));
+        }
+        Input end;
+        end.hands[0] = {{s.body().position, aim}, {}, true, 0, jump ? 1.f : 0.f};
+        end.jump = jump;
+        const float lengthBefore = s.webs()[0].length;
+        s.update(1.f / 90, end, world);
+        struct Result {
+            SwingLedger ledger;
+            float deepest, lengthAtAttach, lengthBefore;
+            bool attached;
+            Body body;
+        };
+        return Result{s.lastSwing(), deepest, lengthAtAttach, lengthBefore, s.webs()[0].attached, s.body()};
+    };
+    test("swing model: classic is 0.2.11's swing, and 2.0 goes back to it", [] {
+        const SwingConfig classic;
+        check(classic.catchFrequency == 0 && classic.swingFall == 1 && classic.swingRise == 1,
+              "the classic swing has an elastic web or a pump");
+        for (int i = 0; i < 3; ++i)
+            check(classic.jumpOffUp[i] == 0 && classic.jumpOffBoost[i] == 0, "the classic swing jumps off");
+        SwingConfig c;
+        applySwingModel(c, SwingModel::v2);
+        check(c.catchFrequency > 0 && c.swingFall > 1 && c.swingRise < 1 && c.jumpOffBoost[1] > 0,
+              "2.0 is the classic swing");
+        static_cast<void>(spidy::Swing(c)); // a valid configuration
+        applySwingModel(c, SwingModel::classic);
+        check(c.catchFrequency == 0 && c.swingFall == 1 && c.jumpOffUp[2] == 0, "2.0 stayed after classic");
+    });
+    test("a rigid web snaps taut and cuts the speed; an elastic one catches and keeps it", [&] {
+        const auto rigid = swingAhead(SwingModel::classic, 1.6f), elastic = swingAhead(SwingModel::v2, 1.6f);
+        check(rigid.ledger.snaps >= 1 && rigid.ledger.snapLoss > 50, "the rigid web did not snap");
+        check(elastic.ledger.snaps == 0 && elastic.ledger.catches >= 1, "the elastic web snapped");
+        check(elastic.ledger.exit > rigid.ledger.exit + 4,
+              ("the elastic web kept " + std::to_string(elastic.ledger.exit) + " m/s, the rigid one " +
+               std::to_string(rigid.ledger.exit))
+                  .c_str());
+        check(elastic.ledger.sling > 20, "the catch kept nothing along the swing");
+    });
+    test("an elastic web stretches as it catches and springs back to its length", [&] {
+        const auto r = swingAhead(SwingModel::v2, 2.5f);
+        check(r.deepest > .5f && r.deepest < 5, ("the web stretched " + std::to_string(r.deepest) + " m").c_str());
+        near(r.ledger.deepest, r.deepest, .01f);
+        near(r.lengthBefore, r.lengthAtAttach, .02f);
+    });
+    test("the swing ledger adds up to the change in speed", [&] {
+        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
+            const auto l = swingAhead(model, 2).ledger;
+            const float g = SwingConfig{}.gravity;
+            const float change = .5f * (l.exit * l.exit - l.entry * l.entry);
+            const float sum = g * l.drop + l.yank + l.reel - l.rope + l.elastic + l.sling + l.pump + l.steer - l.cap + l.jump;
+            check(std::abs(change - sum) < 4 + .03f * .5f * l.entry * l.entry,
+                  ("the ledger has " + std::to_string(sum) + " m^2/s^2 for a change of " + std::to_string(change))
+                      .c_str());
+            check(l.swings == 1 && l.seconds > 1.9f && l.peak >= l.exit, "the ledger lost the swing");
+        }
+    });
+    test("the jump does nothing on a classic swing, and leaps off a 2.0 one", [&] {
+        const auto classic = swingAhead(SwingModel::classic, 1.2f, true);
+        check(classic.attached, "a jump let go of a classic web");
+        // On the way up the arc, where a jump off pays most.
+        const auto v2 = swingAhead(SwingModel::v2, 1.7f, true), held = swingAhead(SwingModel::v2, 1.7f);
+        check(!v2.attached && v2.ledger.jumpOff == 1 && v2.ledger.jump > 0, "the jump did not leap off the swing");
+        check(v2.body.velocity.y >= 6 - 2 * 9.81f / 120 - .01f, // the floor, then two steps of gravity
+               ("the jump off rose at " + std::to_string(v2.body.velocity.y)).c_str());
+        check(v2.ledger.exit > held.ledger.exit + 3, ("the jump off left at " + std::to_string(v2.ledger.exit) + ", letting go at " + std::to_string(held.ledger.exit) + ", vy " + std::to_string(held.body.velocity.y)).c_str());
+    });
+    test("2.0's pump: a swing from rest leaves faster than the classic one", [] {
+        float exits[2]{};
+        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
+            SwingConfig c;
+            applySwingModel(c, model);
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 35, 0}, {}, false});
+            const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+            Input in;
+            for (int f = 0; f < 270; ++f) { // 3 s: through the bottom and up the far side
+                in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+                s.update(1.f / 90, in, world);
+            }
+            exits[model == SwingModel::v2] = length(s.body().velocity);
+            check(s.lastSwing().swings == 0 && s.swing().pump * (model == SwingModel::v2) >= 0, "the swing ended");
+        }
+        check(exits[1] > exits[0] + 1, ("2.0 left at " + std::to_string(exits[1]) + " m/s, classic at " +
+                                           std::to_string(exits[0])).c_str());
+    });
     std::cout << total - failed << '/' << total << " tests passed\n";
     return failed ? 1 : 0;
 }

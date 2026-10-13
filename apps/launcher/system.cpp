@@ -543,6 +543,7 @@ Settings loadSettings() {
         else if (key == "flips") o.flips = number() != 0;
         else if (key == "trigger_webs") o.triggerWebs = number() != 0;
         else if (key == "controller_aim") o.controllerAim = number() != 0;
+        else if (key == "swing_model") o.swingModel = std::clamp(number(), 0, 1);
         else if (key == "stand_on_walls") o.standOnWalls = number() != 0;
         else if (key == "physical_webs") o.physicalWebs = number() != 0;
         else if (key == "game_depth_of_field") o.gameDepthOfField = number() != 0;
@@ -603,6 +604,7 @@ void saveSettings(const Settings& settings) {
          << "\nsmall_window=" << o.smallWindow << "\nstock_monitor_view=" << o.stockMonitorView
          << "\naim_markers=" << o.aimMarkers << "\nair_webs=" << o.airWebs << "\nflips=" << o.flips
          << "\ntrigger_webs=" << o.triggerWebs << "\ncontroller_aim=" << o.controllerAim
+         << "\nswing_model=" << o.swingModel
          << "\nstand_on_walls=" << o.standOnWalls
          << "\nphysical_webs=" << o.physicalWebs << "\ngame_depth_of_field=" << o.gameDepthOfField
          << "\ngame_sharpening=" << o.gameSharpening

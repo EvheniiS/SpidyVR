@@ -74,6 +74,9 @@ constexpr const char* kHudSizes[] = {"Off", "Small", "Medium", "Large"};
 constexpr const char* kScreenDepths[] = {"Off", "Low", "Medium", "High"};
 // The button that shoots and holds webs (SessionOptions::triggerWebs: the second).
 constexpr const char* kWebButtons[] = {"Grip", "Trigger"};
+// The swing's physics (SessionOptions::swingModel).
+constexpr const char* kSwingModels[] = {"Classic", "2.0"};
+constexpr int kSwingModelValues[] = {0, 1};
 // Where a web goes (SessionOptions::controllerAim: the second).
 constexpr const char* kAims[] = {"Hand", "Controller"};
 constexpr const char* kWeights[] = {"40%", "60%", "80%", "100%", "125%", "150%", "200%", "250%", "300%"};
@@ -1032,6 +1035,12 @@ void App::optionsCard(ImVec2 size) {
         }
         ImGui::PopFont();
     };
+    option("Swing model",
+           o.swingModel ? "2.0: an elastic web keeps the speed of a fall it catches, each swing leaves faster than it "
+                          "came in, and A jumps off a swing."
+                        : "Classic: the swing as it was in 0.2.11. 2.0 tries an elastic web, a faster swing and A to "
+                          "jump off.",
+           S(150), [&] { stepCombo("##swingModel", kSwingModels, kSwingModelValues, 2, &o.swingModel); });
     option("Web button", "Which button shoots and holds a web; the other reels in and shoots web balls.",
            S(150), [&] {
                static constexpr int buttons[] = {0, 1};

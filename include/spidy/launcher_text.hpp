@@ -507,6 +507,9 @@ struct SessionOptions {
     // Webs go where the controllers point, as VR pointers; off, along the hands' line from the wrist past the middle
     // fingers, as Spider-Man shoots.
     bool controllerAim = false;
+    // The swing (SwingModel): 0 classic, as in 0.2.11; 1 2.0, an elastic web that keeps the speed of a fall it
+    // catches, a swing that leaves faster than it came in, and A to jump off a swing.
+    int swingModel = 0;
     int hud = 2; // the game's HUD in the headset: 0 off, 1 small, 2 medium, 3 large
     // Walking a wall or stopped on it, your view turns so that the wall is your floor; off, you stay upright.
     bool standOnWalls = true;
@@ -590,7 +593,8 @@ inline std::vector<std::wstring> sessionArguments(const SessionOptions& options,
         {std::clamp(options.hud, 0, 3), {L"--hud", 2}},
         {std::clamp(options.flipSpeed, 90, 480), {L"--flip-speed", 180}},
         {std::clamp(options.monitorRate, 0, static_cast<int>(maximumMonitorRate)),
-         {L"--monitor-rate", static_cast<int>(defaultMonitorRate)}}};
+         {L"--monitor-rate", static_cast<int>(defaultMonitorRate)}},
+        {std::clamp(options.swingModel, 0, 1), {L"--swing-model", 0}}};
     for (const auto& [value, flag] : settings)
         if (value != flag.second) {
             args.emplace_back(flag.first);

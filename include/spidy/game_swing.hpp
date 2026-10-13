@@ -153,7 +153,7 @@ enum class Surface : uint32_t {
     game, // the game's wall crawl (its actor turned onto the surface)
 };
 struct Data {
-    uint32_t magic = 0x53574441, version = 4, bytes = sizeof(Data), status{};
+    uint32_t magic = 0x53574441, version = 5, bytes = sizeof(Data), status{};
     int64_t sequence{};
     uint64_t qpc{}, steps{}, controlled{}, serial{}, attaches{}, releases{}, zips{}, world{}, sourceStep{};
     Vec3 position{}, velocity{}, requested{};
@@ -175,6 +175,11 @@ struct Data {
     Vec3 wallNormal{};
     float wallDistance{};
     uint32_t walls{}, wallJumps{}, mount{};
+    // Version 5: the elastic webs' catches and the jumps off a swing so far,
+    // the swing model in use (SwingModel), and the last swing that ended
+    // (SwingLedger; its `swings` counts them).
+    uint32_t catches{}, jumpOffs{}, model{}, reserved{};
+    SwingLedger last{};
 };
 static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 224 &&
               offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3 &&
@@ -193,18 +198,21 @@ static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 2
 // physical: webs are ropes (SwingConfig::physical: they bend round edges,
 // are held by the hand and pay out on the ground); off, as before October
 // 12. Version 4 (settingsBytesV4) ends before it and leaves the webs as they
-// are.
+// are. Version 6, model: the swing model (SwingModel; the launcher's SWING
+// MODEL); version 5 (settingsBytesV5) ends before it and leaves the model as
+// it is, classic from the start.
 struct Settings {
-    uint32_t magic = 0x53575354, version = 5, bytes = sizeof(Settings), grab = 1;
+    uint32_t magic = 0x53575354, version = 6, bytes = sizeof(Settings), grab = 1;
     float maxSpeed = 32;
     uint32_t airWebs = 1;
     float gravity = 6;
     uint32_t walls = 1;
     uint32_t physical = 1;
+    uint32_t model{}, reserved{};
 };
-constexpr uint32_t settingsBytesV3 = 28, settingsBytesV4 = 32;
-static_assert(sizeof(Settings) == 36 && offsetof(Settings, walls) == settingsBytesV3 &&
-              offsetof(Settings, physical) == settingsBytesV4);
+constexpr uint32_t settingsBytesV3 = 28, settingsBytesV4 = 32, settingsBytesV5 = 36;
+static_assert(sizeof(Settings) == 44 && offsetof(Settings, walls) == settingsBytesV3 &&
+              offsetof(Settings, physical) == settingsBytesV4 && offsetof(Settings, model) == settingsBytesV5);
 // Physical webs (SpidyRopeData): what the ropes did, for the session report.
 struct Ropes {
     uint32_t magic = 0x53575250, version = 1, bytes = sizeof(Ropes), physical{};
@@ -221,7 +229,8 @@ struct Ropes {
 static_assert(sizeof(Ropes) == 80);
 // The most gravity a swing takes, m/s^2: every weight the VR settings offer.
 constexpr float maxGravity = 30;
-static_assert(sizeof(WebState) == 28 && sizeof(Data) == 272 && offsetof(Data, wall) == 240);
+static_assert(sizeof(WebState) == 28 && sizeof(SwingLedger) == 88 && sizeof(Data) == 376 &&
+              offsetof(Data, wall) == 240 && offsetof(Data, catches) == 272 && offsetof(Data, last) == 288);
 // The player is in the air: Spidy's own flight, or the game's jump or fall,
 // where the mover is unsupported and in its airborne mode (collision flags
 // 0x10: the steps the game's air state runs). A perch, a wall crawl and a
