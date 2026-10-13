@@ -120,6 +120,26 @@ def free_commit_mb():
     return status.ullAvailPageFile >> 20
 
 
+def foreground_owner(game_pid):
+    """None while the game's window is in front; else the front window's program and title. The game pauses
+    while another window is in front (vr_launcher.bring_to_front): on October 11 it stood still for 42 s
+    mid-swing, VR on the game screen, its pad unread."""
+    user32 = c.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, c.byref(pid))
+    if pid.value == game_pid:
+        return None
+    title = c.create_unicode_buffer(128)
+    user32.GetWindowTextW(hwnd, title, 128)
+    exe, size = c.create_unicode_buffer(260), wintypes.DWORD(260)
+    process = c.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if process:
+        c.windll.kernel32.QueryFullProcessImageNameW(process, 0, exe, c.byref(size))
+        c.windll.kernel32.CloseHandle(process)
+    return f"{pathlib.Path(exe.value).name or 'pid ' + str(pid.value)} '{title.value}'"
+
+
 class ProcessMemory(c.Structure):
     _fields_ = [('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD), ('PeakWorkingSetSize', c.c_size_t),
                 ('WorkingSetSize', c.c_size_t), ('QuotaPeakPagedPoolUsage', c.c_size_t),
@@ -1491,6 +1511,8 @@ def session(a, startup):
         # The game's reads of Spidy's controller: none while buttons are held on the game screen means its
         # menus cannot be played (the October 7 Steam Link session: the game had turned XInput off).
         pad_watch = dict(reads=None, since=0.0, warned=False)
+        # Who held the foreground while the game's window was behind (foreground_owner), as {seconds, owner}.
+        focus_changes = []
 
         # How the eyes are rendered: upscaled from `upscale` percent of their size per side and anti-aliased
         # (or neither), whether the game renders a view of its own for the monitor as well, how often the
@@ -1525,6 +1547,7 @@ def session(a, startup):
                         stream_stalls=stream_stalls(list(samples)),
                         free_commit_mb=dict(start=start_commit, lowest=lowest_commit),
                         eye_snapshots=list(eye_shots), eye_snapshot_folder=str(eye_folder) if eye_shots else None,
+                        focus_changes=list(focus_changes),
                         frame_rates=frame_rates(list(samples)), final=samples[-1] if samples else None, **extra)
 
         def write_report(result):
@@ -1647,6 +1670,11 @@ def session(a, startup):
                     samples.append(sample)
                     if pad_ignored(pad_watch, sample):
                         print(PAD_IGNORED, flush=True)
+                    owner = foreground_owner(game.pid)
+                    if owner != (focus_changes[-1]['owner'] if focus_changes else None):
+                        focus_changes.append(dict(seconds=sample['seconds'], owner=owner))
+                        print(f"Focus: {owner} is in front of the game, which pauses until it is in front again"
+                              if owner else 'Focus: the game is in front again', flush=True)
                     if sample['eye_width'] and not printed_dimensions:
                         print(rendering_line(sample['eye_width'], sample['eye_height'], a.render_scale, a.size,
                                              runtime['recommended_eye'], a.upscale, not a.no_eye_antialiasing),
