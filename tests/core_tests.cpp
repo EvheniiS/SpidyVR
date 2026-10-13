@@ -7961,6 +7961,40 @@ int main() {
         near(r.ledger.deepest, r.deepest, .01f);
         near(r.lengthBefore, r.lengthAtAttach, .02f);
     });
+    test("2.0's web springs back without flinging the body at its anchor", [] {
+        // A 20 m/s fall caught by a web ahead: how fast the body went toward
+        // the rope's end as the web came back to its length (within 0.15 m).
+        // It comes back over a second or so, carrying the body in at up to
+        // 3 m/s on the way, and reaches its length with the body nearly still.
+        const auto toward = [](float bounce) {
+            SwingConfig c;
+            applySwingModel(c, SwingModel::v2);
+            if (bounce >= 0)
+                c.catchBounce = bounce;
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 40, 0}, {3, -20, 0}, false});
+            const Quat aim = arc({0, 0, -1}, normalized(Vec3{.3f, 1, 0}));
+            float most = 0, deepest = 0;
+            for (int f = 0; f < 135; ++f) {
+                Input in;
+                in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+                s.update(1.f / 90, in, world);
+                deepest = std::max(deepest, s.stretch(0));
+                const Vec3 out = normalized(s.body().position - s.webs()[0].anchor);
+                if (deepest > .5f && s.stretch(0) < .15f)
+                    most = std::max(most, -dot(s.body().velocity, out));
+            }
+            check(s.lastSwing().swings == 0 && s.swing().catches >= 1 && s.swing().snaps == 0 &&
+                      deepest > .5f,
+                  "the web did not catch the fall");
+            return most;
+        };
+        const float none = toward(-1), bounced = toward(.4f);
+        check(none < 1 && bounced > 3, ("the body went at the anchor at " + std::to_string(none) + " m/s (" +
+                                        std::to_string(bounced) + " with the old bounce)")
+                                           .c_str());
+    });
     test("the swing ledger adds up to the change in speed", [&] {
         for (const auto model : {SwingModel::classic, SwingModel::v2}) {
             const auto l = swingAhead(model, 2).ledger;

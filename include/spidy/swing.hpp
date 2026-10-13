@@ -106,12 +106,12 @@ struct SwingConfig {
     // The elastic web. A rope pulled taut while the body moves away from its
     // anchor faster than catchMin (a web catching a fall, a slack rope after
     // a yank) gives like an elastic band instead of cutting that speed in one
-    // step: it stretches, a spring of catchFrequency (Hz; a quarter period,
-    // 0.25 s at 1 Hz, to the deepest stretch: the game's SlingDataAir
-    // Duration), and springs back to its length, flinging the body toward
-    // the anchor at catchBounce of the speed it caught. Of the rest, catchKeep
-    // goes on along the swing (the game's sling: the fall turns into the
-    // swing). catchFrequency 0: a rigid web, which cuts that speed at once.
+    // step: it stretches, a spring of catchFrequency (Hz), and springs back
+    // to its length, flinging the body toward the anchor at catchBounce of
+    // the speed it caught. Of the rest, catchKeep goes on along the swing
+    // (the fall turns into the swing: the game keeps a caught speed too, its
+    // rope only bending the velocity). catchFrequency 0: a rigid web, which
+    // cuts that speed at once.
     float catchMin = 2, catchFrequency = 0, catchBounce = .4f, catchKeep = 1;
     // A faster catch stiffens the web so it stretches catchDepth m at most
     // (the October 11 headset report: 6-7 m at 65 m/s, a bungee). 0: no limit.
@@ -211,8 +211,12 @@ enum class SwingModel : uint32_t { classic, v2 };
 inline void applySwingModel(SwingConfig& c, SwingModel model) {
     const SwingConfig classic;
     const bool v2 = model == SwingModel::v2;
-    c.catchFrequency = v2 ? 1.f : classic.catchFrequency;
-    c.catchBounce = v2 ? .4f : classic.catchBounce;
+    c.catchFrequency = v2 ? .6f : classic.catchFrequency;
+    // No bounce: the game's rope never springs the body back toward the
+    // anchor. Unbounced, the spring is nearly critically damped and stiffer;
+    // 0.6 Hz gives as before (1.6 m at a 30 m/s catch, deepest at 0.27 s,
+    // near the game's 0.33 s of rope it does not hold to its length).
+    c.catchBounce = v2 ? 0.f : classic.catchBounce;
     c.catchKeep = v2 ? 1.f : classic.catchKeep;
     c.catchDepth = v2 ? 3.f : classic.catchDepth;
     c.reelFollows = v2 || classic.reelFollows;
