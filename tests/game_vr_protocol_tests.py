@@ -153,18 +153,21 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(assess_swing(samples,final,True,(0,0,0))['passed'])
 
     def test_swing_feedback_and_two_anchor_boundaries(self):
-        raw = bytearray(376)
-        struct.pack_into('<4IQ9Q10f2I', raw, 0, 0x53574441,5,376,2,4,
+        raw = bytearray(392)
+        struct.pack_into('<4IQ9Q10f2I', raw, 0, 0x53574441,6,392,2,4,
                          *range(1,10), *range(10,19), .01,1,0)
         struct.pack_into('<2I5f',raw,144,1,0x3000123,1,2,3,40,50)
         struct.pack_into('<2I5f',raw,172,0,0xffffffff,4,5,6,70,80)
         struct.pack_into('<4I',raw,224,2,1,7,0)
         struct.pack_into('<I4f3I',raw,240,1,-1,0,0,.9,3,2,1)
-        # Version 5: catches, jumps off, the model, then the last swing's ledger (5 counts, 17 floats).
-        struct.pack_into('<4I',raw,272,6,2,1,0)
-        struct.pack_into('<5I17f',raw,288,9,1,3,4,2,*[float(x) for x in range(17)])
+        # Version 5: catches, jumps off, the model, then the last swing's ledger (5 counts, 17 floats);
+        # version 6: the momentum surges, the ledger's boost and momentum, the meter now.
+        struct.pack_into('<4I',raw,272,6,2,1,5)
+        struct.pack_into('<5I19f',raw,288,9,1,3,4,2,*[float(x) for x in range(19)])
+        struct.pack_into('<f',raw,384,4.5)
         result = swing_snapshot(Reader(raw,struct.pack('<Q',4)),0)
-        self.assertEqual((result['catches'],result['jump_offs'],result['model']),(6,2,1))
+        self.assertEqual((result['catches'],result['jump_offs'],result['model'],result['surges']),(6,2,1,5))
+        self.assertEqual((result['last_swing']['boost'],result['last_swing']['momentum'],result['momentum']),(17,18,4.5))
         last = result['last_swing']
         self.assertEqual((last['swings'],last['snaps'],last['catches'],last['yanks'],last['jump_off']),(9,1,3,4,2))
         self.assertEqual((last['seconds'],last['entry'],last['sling'],last['jump'],last['deepest']),(0,1,10,15,16))
@@ -795,7 +798,7 @@ class ProtocolTests(unittest.TestCase):
                                      (collision_snapshot, 0x53435044, 2160),
                                      (movement_snapshot, 0x534d5044, 57408),
                                      (motion_snapshot, 0x534d5644, 176), (ray_snapshot, 0x53525944, 784),
-                                     (swing_snapshot,0x53574441,376),(timing_snapshot,0x5358544d,1416),
+                                     (swing_snapshot,0x53574441,392),(timing_snapshot,0x5358544d,1416),
                                      (appearance_snapshot,0x53415044,328),(eye_snapshot,0x53455353,112),
                                      (grab_snapshot,0x53475244,368),(body_snapshot,0x53424453,144),
                                      (punch_snapshot,0x53505544,168),(shooter_snapshot,0x53484f44,192),

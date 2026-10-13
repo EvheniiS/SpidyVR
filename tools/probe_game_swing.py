@@ -18,10 +18,10 @@ from probe_native_rays import snapshot as ray_snapshot, command as ray_command
 
 def snapshot(game, address):
     for _ in range(8):
-        raw = game.read(address, 376)
-        if len(raw) != 376:
+        raw = game.read(address, 392)
+        if len(raw) != 392:
             return None
-        if struct.unpack_from('<3I', raw) != (0x53574441, 5, 376):
+        if struct.unpack_from('<3I', raw) != (0x53574441, 6, 392):
             raise RuntimeError('Native swing protocol mismatch')
         if struct.unpack_from('<Q', raw, 16)[0] & 1 or raw[16:24] != game.read(address+16, 8):
             continue
@@ -45,8 +45,10 @@ def snapshot(game, address):
         result['walls'], result['wall_jumps'], result['mount'] = struct.unpack_from('<3I', raw, 260)
         # Version 5: elastic catches and jumps off a swing so far, the swing model (0 classic, 1 2.0), and the
         # last swing that ended (SwingLedger: energies per unit mass, m^2/s^2).
-        result['catches'], result['jump_offs'], result['model'] = struct.unpack_from('<3I', raw, 272)
-        result['last_swing'] = dict(zip(('swings', 'snaps', 'catches', 'yanks', 'jump_off', 'seconds', 'entry', 'exit', 'peak', 'fall', 'drop', 'rope', 'snap_loss', 'reel', 'elastic', 'sling', 'yank', 'pump', 'steer', 'cap', 'jump', 'deepest'), struct.unpack_from('<5I17f', raw, 288)))
+        # Version 6: the momentum meter's surges to its high stage, the ledger's boost and momentum, the meter now.
+        result['catches'], result['jump_offs'], result['model'], result['surges'] = struct.unpack_from('<4I', raw, 272)
+        result['last_swing'] = dict(zip(('swings', 'snaps', 'catches', 'yanks', 'jump_off', 'seconds', 'entry', 'exit', 'peak', 'fall', 'drop', 'rope', 'snap_loss', 'reel', 'elastic', 'sling', 'yank', 'pump', 'steer', 'cap', 'jump', 'deepest', 'boost', 'momentum'), struct.unpack_from('<5I19f', raw, 288)))
+        result['momentum'] = struct.unpack_from('<f', raw, 384)[0]
         return result
     return None
 

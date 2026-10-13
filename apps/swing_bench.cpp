@@ -3,7 +3,11 @@
 // each swing did (the swing ledger), so a change to the swing's physics can be
 // measured before anyone puts the headset on.
 //
-//   spidy_swing_bench [gravity m/s^2, default 9.81] [speed limit m/s, default 40]
+//   spidy_swing_bench [gravity m/s^2, default 9.81] [speed limit m/s, default 40] [game]
+//
+// With `game`, each frame runs as the game runs it (game_swing.cpp): the solver
+// predicts from the body the game has, and the game moves the body by the
+// prediction's average velocity, capped at the speed limit.
 #include "spidy/swing.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +39,37 @@ class OpenWorld final : public World {
         return id == 1 || id == 2;
     }
 };
+bool native = false;
+Body gameBody{};
+void start(Swing& s, Body body) {
+    s.reset(body);
+    gameBody = body;
+}
+const Body& now(const Swing& s) {
+    return native ? gameBody : s.body();
+}
+// One frame: the solver's own clock, or as the game runs it.
+void advance(Swing& s, const Input& in, const World& world) {
+    if (!native) {
+        s.update(frame, in, world);
+        return;
+    }
+    const auto p = s.predictNativeStep(frame, in, world, gameBody, frame);
+    if (!p.valid) {
+        gameBody.velocity.y -= 9.81f * frame;
+        gameBody.position = gameBody.position + gameBody.velocity * frame;
+        return;
+    }
+    const Vec3 average = (p.target - gameBody.position) / frame;
+    const Vec3 requested = limited(average, s.speedLimit() * (1 - 1e-6f));
+    gameBody.position = gameBody.position + requested * frame;
+    gameBody.velocity = limited(p.velocity + requested - average, s.speedLimit());
+    gameBody.grounded = gameBody.position.y < .5f;
+    if (gameBody.grounded) {
+        gameBody.position.y = .5f;
+        gameBody.velocity.y = std::max(0.f, gameBody.velocity.y);
+    }
+}
 // The right hand aimed along `way` from the body, the grip as given.
 Input aimed(Vec3 from, Vec3 way, bool grip, Vec3 hand = {}) {
     Input in;
@@ -55,35 +90,36 @@ float pitchOf(Vec3 v) {
 void print(const char* name, const SwingLedger& l, float g) {
     // Energies as metres of height (over gravity), as analyze_swings.py prints them.
     std::printf("  %-28s in %4.1f out %4.1f peak %4.1f drop %5.1f %4.1fs | rope %5.1f snap %4.1f(%u) "
-                "elastic %5.1f sling %5.1f pump %5.1f yank %5.1f jump %5.1f cap %5.1f | catches %u stretch %.1f m\n",
+                "elastic %5.1f sling %5.1f pump %5.1f boost %4.1f yank %5.1f jump %5.1f cap %5.1f | catches %u "
+                "stretch %.1f m momentum %.1f\n",
                 name, l.entry, l.exit, l.peak, l.drop, l.seconds, l.rope / g, l.snapLoss / g, l.snaps, l.elastic / g,
-                l.sling / g, l.pump / g, l.yank / g, l.jump / g, l.cap / g, l.catches, l.deepest);
+                l.sling / g, l.pump / g, l.boost / g, l.yank / g, l.jump / g, l.cap / g, l.catches, l.deepest, l.momentum);
 }
 // One swing: a web shot `pitch` degrees above the way the body goes, held
 // until the body rises at `release` degrees (or `most` seconds), then let go
 // (or, with jump, jumped off).
 SwingLedger swing(Swing& s, const OpenWorld& world, Body start, float pitch, float release, bool jump, float most = 9) {
-    s.reset(start);
+    ::start(s, start);
     const Vec3 way = ahead(start.velocity, pitch);
     bool rose = false;
     for (float t = 0; t < most; t += frame) {
-        Input in = aimed(s.body().position, way, true);
-        const Vec3 v = s.body().velocity;
+        Input in = aimed(now(s).position, way, true);
+        const Vec3 v = now(s).velocity;
         rose |= v.y > 1;
         const bool done = t > .2f && rose && pitchOf(v) >= release;
         if (done) {
             in.hands[0].grip = jump ? 1.f : 0.f;
             in.jump = jump;
-            s.update(frame, in, world);
+            advance(s, in, world);
             break;
         }
-        s.update(frame, in, world);
+        advance(s, in, world);
         if (!s.webs()[0].attached && t > 0)
             break;
     }
     if (s.webs()[0].attached) {
-        Input in = aimed(s.body().position, way, false);
-        s.update(frame, in, world);
+        Input in = aimed(now(s).position, way, false);
+        advance(s, in, world);
     }
     return s.lastSwing();
 }
@@ -93,7 +129,7 @@ SwingLedger swing(Swing& s, const OpenWorld& world, Body start, float pitch, flo
 void chain(SwingConfig config, float g, bool jump) {
     Swing s(config);
     OpenWorld world;
-    s.reset({{0, 35, 0}, {12, 0, 0}, false});
+    start(s, {{0, 35, 0}, {12, 0, 0}, false});
     float t = 0, sum = 0, flight = 0;
     int samples = 0, swings = 0;
     bool holding = false, rose = false, lowest = false;
@@ -101,19 +137,19 @@ void chain(SwingConfig config, float g, bool jump) {
     float minY = 1e9f;
     while (t < 20) {
         Input in;
-        const Vec3 v = s.body().velocity;
+        const Vec3 v = now(s).velocity;
         if (!holding) {
             flight += frame;
-            in = aimed(s.body().position, way, false);
+            in = aimed(now(s).position, way, false);
             if (flight > .35f) {
                 // As a player does: steeper when low, to keep the height.
-                way = ahead(v, s.body().position.y < 20 ? 65.f : 45.f);
+                way = ahead(v, now(s).position.y < 20 ? 65.f : 45.f);
                 holding = true;
                 rose = false;
-                in = aimed(s.body().position, way, true);
+                in = aimed(now(s).position, way, true);
             }
         } else {
-            in = aimed(s.body().position, way, true);
+            in = aimed(now(s).position, way, true);
             rose |= v.y > 1;
             if ((rose && pitchOf(v) >= 30) || !s.webs()[0].attached) {
                 in.hands[0].grip = jump ? 1.f : 0.f;
@@ -123,16 +159,17 @@ void chain(SwingConfig config, float g, bool jump) {
                 ++swings;
             }
         }
-        s.update(frame, in, world);
-        sum += length(s.body().velocity);
-        minY = std::min(minY, s.body().position.y);
-        lowest |= s.body().grounded;
+        advance(s, in, world);
+        sum += length(now(s).velocity);
+        minY = std::min(minY, now(s).position.y);
+        lowest |= now(s).grounded;
         ++samples;
         t += frame;
     }
-    std::printf("  20 s of swings%s: %d swings, mean speed %.1f, end speed %.1f m/s, end height %.0f m, lowest %.0f m%s\n",
-                jump ? " (jumping off)" : "", swings, sum / samples, length(s.body().velocity), s.body().position.y,
-                minY, lowest ? " (touched the ground)" : "");
+    std::printf("  20 s of swings%s: %d swings, mean speed %.1f, end speed %.1f m/s, end height %.0f m, lowest %.0f m%s, "
+                "momentum %.1f (high stage %u times)\n",
+                jump ? " (jumping off)" : "", swings, sum / samples, length(now(s).velocity), now(s).position.y,
+                minY, lowest ? " (touched the ground)" : "", s.momentum(), s.surges());
     (void)g;
 }
 void yankCatch(SwingConfig config, float g) {
@@ -140,22 +177,23 @@ void yankCatch(SwingConfig config, float g) {
     // far side: what that second pull takes.
     Swing s(config);
     OpenWorld world;
-    s.reset({{0, 35, 0}, {10, 0, 0}, false});
+    start(s, {{0, 35, 0}, {10, 0, 0}, false});
     const Vec3 way = ahead({1, 0, 0}, 45);
     Vec3 hand{};
     for (int f = 0; f < 270; ++f) {
         if (f >= 5 && f < 15)
             hand = hand + way * (2.5f * frame); // the hand pulls toward the anchor, 2.5 m/s
-        Input in = aimed(s.body().position, way, true, hand);
-        s.update(frame, in, world);
+        Input in = aimed(now(s).position, way, true, hand);
+        advance(s, in, world);
     }
-    s.update(frame, aimed(s.body().position, way, false), world);
+    advance(s, aimed(now(s).position, way, false), world);
     print("yank, then the rope again", s.lastSwing(), g);
 }
 } // namespace
 int main(int argc, char** argv) {
     const float g = argc > 1 ? std::strtof(argv[1], nullptr) : 9.81f;
     const float limit = argc > 2 ? std::strtof(argv[2], nullptr) : 40;
+    native = argc > 3 && std::string(argv[3]) == "game";
     OpenWorld world;
     for (const auto model : {SwingModel::classic, SwingModel::v2}) {
         SwingConfig config;
@@ -167,8 +205,8 @@ int main(int argc, char** argv) {
         config.maxZipImpulse = 18;
         config.zipMultiplier = 4.5f;
         applySwingModel(config, model);
-        std::printf("%s swing (gravity %.2f, limit %.0f m/s)\n", model == SwingModel::v2 ? "2.0" : "Classic", g,
-                    limit);
+        std::printf("%s swing (gravity %.2f, limit %.0f m/s%s)\n", model == SwingModel::v2 ? "2.0" : "Classic", g,
+                    limit, native ? ", frames as the game runs them" : "");
         Swing s(config);
         for (float v0 : {0.f, 10.f, 20.f}) {
             const std::string name = "level at " + std::to_string(static_cast<int>(v0)) + " m/s";

@@ -586,7 +586,7 @@ DWORD WINAPI run(void*) {
         uint64_t zipBefore{};
         // Walls the swing took the player onto, and jumps off them, by the
         // previous frame.
-        uint32_t wallsBefore{}, wallJumpsBefore{}, jumpOffsBefore{};
+        uint32_t wallsBefore{}, wallJumpsBefore{}, jumpOffsBefore{}, surgesBefore{};
         // Punches each hand had landed by the previous frame.
         bool punchStarted{};
         uint64_t punchesBefore[2]{};
@@ -1272,9 +1272,16 @@ DWORD WINAPI run(void*) {
                             runtime.haptic(0, pulse);
                             runtime.haptic(1, pulse);
                         }
+                        // The momentum meter reaching its high stage (swing model 2.0):
+                        // a light pulse in both hands.
+                        if (input.focused && swingState.status && swingState.surges > surgesBefore) {
+                            runtime.haptic(0, .35f);
+                            runtime.haptic(1, .35f);
+                        }
                         wallsBefore = swingState.walls;
                         wallJumpsBefore = swingState.wallJumps;
                         jumpOffsBefore = swingState.jumpOffs;
+                        surgesBefore = swingState.surges;
                         // Every landed blow, a fist's or a web strike's: the hand
                         // that threw it kicks, as hard and as long as the blow was
                         // (a jab 60 ms, a blow that sends him flying 180 ms and the

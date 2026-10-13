@@ -562,6 +562,8 @@ void visit(const native_rays::QueryContext& world) {
     }
     d.model = swingModel;
     d.last = solver.lastSwing();
+    d.surges = solver.surges();
+    d.momentum = solver.momentum();
     for (unsigned i = 0; i < 2; ++i) {
         const auto& w = solver.webs()[i];
         d.webs[i] = {w.attached, static_cast<uint32_t>(w.surface), w.anchor, w.length, w.tension};

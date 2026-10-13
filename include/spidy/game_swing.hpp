@@ -153,7 +153,7 @@ enum class Surface : uint32_t {
     game, // the game's wall crawl (its actor turned onto the surface)
 };
 struct Data {
-    uint32_t magic = 0x53574441, version = 5, bytes = sizeof(Data), status{};
+    uint32_t magic = 0x53574441, version = 6, bytes = sizeof(Data), status{};
     int64_t sequence{};
     uint64_t qpc{}, steps{}, controlled{}, serial{}, attaches{}, releases{}, zips{}, world{}, sourceStep{};
     Vec3 position{}, velocity{}, requested{};
@@ -177,9 +177,13 @@ struct Data {
     uint32_t walls{}, wallJumps{}, mount{};
     // Version 5: the elastic webs' catches and the jumps off a swing so far,
     // the swing model in use (SwingModel), and the last swing that ended
-    // (SwingLedger; its `swings` counts them).
-    uint32_t catches{}, jumpOffs{}, model{}, reserved{};
+    // (SwingLedger; its `swings` counts them). Version 6: the times the
+    // momentum meter reached its high stage (Swing::surges), the ledger's
+    // speed boost and momentum, and the momentum meter now.
+    uint32_t catches{}, jumpOffs{}, model{}, surges{};
     SwingLedger last{};
+    float momentum{};
+    uint32_t reserved{};
 };
 static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 224 &&
               offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3 &&
@@ -229,8 +233,9 @@ struct Ropes {
 static_assert(sizeof(Ropes) == 80);
 // The most gravity a swing takes, m/s^2: every weight the VR settings offer.
 constexpr float maxGravity = 30;
-static_assert(sizeof(WebState) == 28 && sizeof(SwingLedger) == 88 && sizeof(Data) == 376 &&
-              offsetof(Data, wall) == 240 && offsetof(Data, catches) == 272 && offsetof(Data, last) == 288);
+static_assert(sizeof(WebState) == 28 && sizeof(SwingLedger) == 96 && sizeof(Data) == 392 &&
+              offsetof(Data, wall) == 240 && offsetof(Data, catches) == 272 && offsetof(Data, last) == 288 &&
+              offsetof(Data, momentum) == 384);
 // The player is in the air: Spidy's own flight, or the game's jump or fall,
 // where the mover is unsupported and in its airborne mode (collision flags
 // 0x10: the steps the game's air state runs). A perch, a wall crawl and a

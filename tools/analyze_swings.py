@@ -11,8 +11,9 @@ runner's (about 20 a second), so the catch is measured over one sample (about 50
 Reports from builds with the swing ledger (Data version 5, `swings` in the report) also carry each
 swing's exact budget from the solver, printed after the sampled table: in metres of height, what the
 ropes cut (snaps: a rigid rope pulled taut), what elastic catches took and kept along the swing (sling),
-the swing's pump, the yanks, the reel, the jump off, the stick and the speed limit. `rest` is what the
-game changed between the solver's predictions (collisions, the game's own motion).
+the swing's pump, the yanks, the reel, the jump off, the stick, the speed limit and (version 6) the swing's
+speed boost, with the momentum meter as each swing ended. `rest` is what the game changed between the
+solver's predictions (collisions, the game's own motion, steps on the ground, which the ledger skips).
 
 Last, the falls with no web (airborne, off walls, going down faster than 3 m/s): Spidy's (after a web let
 go) and the game's own (no web at all), each with its length, height and fastest speed going down.
@@ -122,25 +123,33 @@ def main():
     if ledger:
         model = {0: 'classic', 1: '2.0'}.get(r.get('swing_model'), '?')
         print(f"\nSwing ledger ({model} swing model), metres of height:")
-        print('   in  out peak drop    s | rope snap(n) elastic sling pump yank reel jump steer  cap  rest | '
-              'catches stretch')
+        print('   in  out peak drop    s | rope snap(n) elastic sling pump boost yank reel jump steer  cap  rest | '
+              'catches stretch momentum')
+        for x in ledger:
+            x.setdefault('boost', 0.0)
         for x in ledger if a.all else ledger[-40:]:
-            terms = {k: x[k] / g for k in ('rope', 'snap_loss', 'elastic', 'sling', 'pump', 'yank', 'reel', 'jump',
-                                           'steer', 'cap')}
+            terms = {k: x[k] / g for k in ('rope', 'snap_loss', 'elastic', 'sling', 'pump', 'boost', 'yank', 'reel',
+                                           'jump', 'steer', 'cap')}
             change = (x['exit'] ** 2 - x['entry'] ** 2) / (2 * g)
             rest = change - (x['drop'] + terms['yank'] + terms['reel'] - terms['rope'] + terms['elastic'] +
-                             terms['sling'] + terms['pump'] + terms['steer'] - terms['cap'] + terms['jump'])
+                             terms['sling'] + terms['pump'] + terms['boost'] + terms['steer'] - terms['cap'] +
+                             terms['jump'])
             print(f"{x['entry']:5.1f} {x['exit']:4.1f} {x['peak']:4.1f} {x['drop']:5.1f} {x['seconds']:4.1f} | "
                   f"{terms['rope']:4.1f} {terms['snap_loss']:4.1f}({x['snaps']}) {terms['elastic']:7.1f} "
-                  f"{terms['sling']:5.1f} {terms['pump']:4.1f} {terms['yank']:4.1f} {terms['reel']:4.1f} "
-                  f"{terms['jump']:4.1f} {terms['steer']:5.1f} {terms['cap']:4.1f} {rest:5.1f} | "
-                  f"{x['catches']:3d} {x['deepest']:5.1f} m")
+                  f"{terms['sling']:5.1f} {terms['pump']:4.1f} {terms['boost']:5.1f} {terms['yank']:4.1f} "
+                  f"{terms['reel']:4.1f} {terms['jump']:4.1f} {terms['steer']:5.1f} {terms['cap']:4.1f} {rest:5.1f} | "
+                  f"{x['catches']:3d} {x['deepest']:5.1f} m {x.get('momentum', 0):4.1f}")
         total = lambda k: sum(x[k] for x in ledger) / g
         print(f"All {len(ledger)} swings: snaps {sum(x['snaps'] for x in ledger)} took {total('snap_loss'):.0f} m, "
               f"ropes {total('rope'):.0f} m; elastic catches {sum(x['catches'] for x in ledger)}, "
-              f"net {total('elastic') + total('sling'):+.0f} m; pump {total('pump'):+.0f} m, yanks "
-              f"{total('yank'):+.0f} m, jumps off {sum(x['jump_off'] for x in ledger)} {total('jump'):+.0f} m, "
-              f"speed limit {-total('cap'):+.0f} m")
+              f"net {total('elastic') + total('sling'):+.0f} m; pump {total('pump'):+.0f} m, boost "
+              f"{total('boost'):+.0f} m, yanks {total('yank'):+.0f} m, reel {total('reel'):+.0f} m, jumps off "
+              f"{sum(x['jump_off'] for x in ledger)} {total('jump'):+.0f} m, speed limit {-total('cap'):+.0f} m")
+        if any('momentum' in x for x in ledger):
+            high = sum(x['momentum'] >= 4 for x in ledger)
+            print(f"Momentum as swings ended: median {statistics.median(x['momentum'] for x in ledger):.1f}, "
+                  f"at the high stage (4+) in {high} of {len(ledger)}; surges to it this session: "
+                  f"{max((s.get('surges', 0) for s in samples), default=0)}")
     air = [x for x in rows if not x['grounded']]
     summary('Swings with no yank or reel', [x for x in air if not x['zips'] and not x['reeled']])
     summary('Swings with a yank', [x for x in air if x['zips']])

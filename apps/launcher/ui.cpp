@@ -1036,10 +1036,11 @@ void App::optionsCard(ImVec2 size) {
         ImGui::PopFont();
     };
     option("Swing model",
-           o.swingModel ? "2.0: an elastic web keeps the speed of a fall it catches, each swing leaves faster than it "
-                          "came in, and A jumps off a swing."
-                        : "Classic: the swing as it was in 0.2.11. 2.0 tries an elastic web, a faster swing and A to "
-                          "jump off.",
+           o.swingModel ? "2.0: an elastic web keeps the speed of a fall it catches, each swing speeds up and leaves "
+                          "faster than it came in, A jumps off a swing, and chaining moves builds momentum (a pulse "
+                          "in both hands: faster, lighter swings)."
+                        : "Classic: the swing as it was in 0.2.11. 2.0 tries an elastic web, a faster swing, A to "
+                          "jump off and momentum.",
            S(150), [&] { stepCombo("##swingModel", kSwingModels, kSwingModelValues, 2, &o.swingModel); });
     option("Web button", "Which button shoots and holds a web; the other reels in and shoots web balls.",
            S(150), [&] {

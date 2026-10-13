@@ -7919,7 +7919,8 @@ int main() {
         Input end;
         end.hands[0] = {{s.body().position, aim}, {}, true, 0, jump ? 1.f : 0.f};
         end.jump = jump;
-        const float lengthBefore = s.webs()[0].length;
+        // The rope's own length, without what a catch going on stretches it.
+        const float lengthBefore = s.webs()[0].length - s.stretch(0);
         s.update(1.f / 90, end, world);
         struct Result {
             SwingLedger ledger;
@@ -7964,7 +7965,8 @@ int main() {
             const auto l = swingAhead(model, 2).ledger;
             const float g = SwingConfig{}.gravity;
             const float change = .5f * (l.exit * l.exit - l.entry * l.entry);
-            const float sum = g * l.drop + l.yank + l.reel - l.rope + l.elastic + l.sling + l.pump + l.steer - l.cap + l.jump;
+            const float sum =
+                g * l.drop + l.yank + l.reel - l.rope + l.elastic + l.sling + l.pump + l.boost + l.steer - l.cap + l.jump;
             check(std::abs(change - sum) < 4 + .03f * .5f * l.entry * l.entry,
                   ("the ledger has " + std::to_string(sum) + " m^2/s^2 for a change of " + std::to_string(change))
                       .c_str());
@@ -8000,6 +8002,155 @@ int main() {
         }
         check(exits[1] > exits[0] + 1, ("2.0 left at " + std::to_string(exits[1]) + " m/s, classic at " +
                                            std::to_string(exits[0])).c_str());
+    });
+    test("2.0's web stretches 3 m at most, however fast the catch", [] {
+        float deepest[2]{};
+        for (const float depth : {0.f, 3.f}) {
+            SwingConfig c;
+            c.maxSpeed = 65;
+            applySwingModel(c, SwingModel::v2);
+            c.catchDepth = depth;
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 40, 0}, {3, -55, 0}, false});
+            const Quat aim = arc({0, 0, -1}, normalized(Vec3{.3f, 1, 0}));
+            for (int f = 0; f < 90; ++f) {
+                Input in;
+                in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+                s.update(1.f / 90, in, world);
+                deepest[depth > 0] = std::max(deepest[depth > 0], s.stretch(0));
+            }
+        }
+        check(deepest[0] > 4.5f, ("unlimited, the web stretched " + std::to_string(deepest[0]) + " m").c_str());
+        check(deepest[1] > 2 && deepest[1] <= 3.1f, ("the web stretched " + std::to_string(deepest[1]) + " m").c_str());
+    });
+    test("2.0's winch waits for a body the ground holds; the classic one winds on", [] {
+        float lengths[2]{};
+        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
+            SwingConfig c;
+            applySwingModel(c, model);
+            spidy::Swing s(c);
+            Ceiling world;
+            const Body standing{{0, 1, 0}, {}, true};
+            s.reset(standing);
+            const Quat up = arc({0, 0, -1}, {0, 1, 0});
+            for (int f = 0; f < 90; ++f) { // a second on the ground, reeling
+                Input in;
+                in.hands[0] = {{standing.position, up}, {}, true, f ? 1.f : 0.f, 1};
+                s.predictNativeStep(1.f / 90, in, world, standing);
+            }
+            check(s.webs()[0].attached, "the web let go");
+            lengths[model == SwingModel::v2] = s.webs()[0].length;
+        }
+        check(lengths[0] < 59 - .8f * SwingConfig{}.reelSpeed, ("classic wound to " + std::to_string(lengths[0])).c_str());
+        check(lengths[1] > 59 - .5f, ("2.0 wound the rope to " + std::to_string(lengths[1]) + " m").c_str());
+    });
+    test("2.0's speed boost speeds a swing up, never near the ground", [] {
+        struct Low : Ceiling {
+            std::optional<RayHit> raycast(Vec3 o, Vec3 d, float range) const override {
+                if (d.y < -.99f && range >= 5) // ground 5 m below everywhere
+                    return RayHit{o + d * 5, {0, 1, 0}, 2, true};
+                return Ceiling::raycast(o, d, range);
+            }
+        };
+        const auto boosted = [](SwingModel model, bool low) {
+            SwingConfig c;
+            c.maxSpeed = 40;
+            applySwingModel(c, model);
+            spidy::Swing s(c);
+            Ceiling high;
+            Low ground;
+            const World& world = low ? static_cast<const World&>(ground) : high;
+            s.reset({{0, 35, 0}, {5, 0, 0}, false});
+            const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+            for (int f = 0; f < 180; ++f) {
+                Input in;
+                in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+                s.update(1.f / 90, in, world);
+            }
+            return s.swing().boost;
+        };
+        const float v2 = boosted(SwingModel::v2, false);
+        check(v2 > 5 && v2 <= .5f * (13 * 13 - 5 * 5) + 1, ("the boost gave " + std::to_string(v2)).c_str());
+        check(boosted(SwingModel::classic, false) == 0, "the classic swing boosted");
+        check(boosted(SwingModel::v2, true) == 0, "the swing boosted 5 m above the ground");
+    });
+    test("2.0's momentum: jumps off fill it, its high stage speeds the swing up, and it falls away", [] {
+        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
+            SwingConfig c;
+            c.maxSpeed = 30;
+            applySwingModel(c, model);
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 35, 0}, {15, 0, 0}, false});
+            const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+            float limit = 0;
+            for (int f = 0; f < 700; ++f) { // seven swings of 1.1 s, each ended by a jump off
+                const int at = f % 100;
+                Input in;
+                in.hands[0] = {{s.body().position, aim}, {}, true, 0, at ? 1.f : 0.f};
+                in.jump = at == 99;
+                s.update(1.f / 90, in, world);
+                if (s.webs()[0].attached && s.surges())
+                    limit = std::max(limit, s.speedLimit());
+            }
+            if (model == SwingModel::classic) {
+                check(s.momentum() == 0 && s.surges() == 0, "the classic swing has momentum");
+                continue;
+            }
+            check(s.lastSwing().jumpOff == 1 && s.surges() >= 1 && s.momentum() >= 4,
+                  ("the meter is at " + std::to_string(s.momentum())).c_str());
+            near(s.lastSwing().momentum, s.momentum(), .05f);
+            near(limit, 30 * 28.f / 24, .01f);
+            Input none;
+            none.hands[0] = {{s.body().position, aim}, {}, true, 0, 0};
+            for (int f = 0; f < 450; ++f)
+                s.update(1.f / 90, none, world);
+            check(s.momentum() < 4, ("5 s later the meter is at " + std::to_string(s.momentum())).c_str());
+        }
+    });
+    test("a catch at the speed limit: what the limit cuts is the cap's, never a negative sling", [] {
+        SwingConfig c;
+        c.maxSpeed = 21;
+        applySwingModel(c, SwingModel::v2);
+        spidy::Swing s(c);
+        Ceiling world;
+        s.reset({{0, 40, 0}, {3, -20.5f, 0}, false});
+        const Quat aim = arc({0, 0, -1}, normalized(Vec3{.3f, 1, 0}));
+        for (int f = 0; f < 135; ++f) {
+            Input in;
+            in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+            s.update(1.f / 90, in, world);
+        }
+        const auto& l = s.swing();
+        check(l.catches >= 1 && l.sling >= 0 && l.cap > 0,
+              ("sling " + std::to_string(l.sling) + ", cap " + std::to_string(l.cap)).c_str());
+    });
+    test("the ledger adds up with a winch winding in a stretched rope", [] {
+        SwingLedger l[2];
+        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
+            SwingConfig c;
+            applySwingModel(c, model);
+            spidy::Swing s(c);
+            Ceiling world;
+            s.reset({{0, 35, 0}, {0, 20, 0}, false}); // flying up at the anchor, faster than the winch
+            const Quat up = arc({0, 0, -1}, {0, 1, 0});
+            for (int f = 0; f <= 360; ++f) { // taut again at 2.4 s, the body falling: a catch while reeling
+                Input in;
+                in.hands[0] = {{s.body().position, up}, {}, true, f ? 1.f : 0.f, f < 360 ? 1.f : 0.f};
+                s.update(1.f / 90, in, world);
+            }
+            l[model == SwingModel::v2] = s.lastSwing();
+        }
+        check(l[1].catches >= 1 && l[1].reel > .5f * l[0].reel && l[0].reel > 50,
+              ("reel " + std::to_string(l[1].reel) + " (classic " + std::to_string(l[0].reel) + ")").c_str());
+        for (const auto& x : l) {
+            const float change = .5f * (x.exit * x.exit - x.entry * x.entry);
+            const float sum = SwingConfig{}.gravity * x.drop + x.yank + x.reel - x.rope + x.elastic + x.sling + x.pump +
+                              x.boost + x.steer - x.cap + x.jump;
+            check(std::abs(change - sum) < 6, ("the ledger has " + std::to_string(sum) + " for a change of " +
+                                                std::to_string(change)).c_str());
+        }
     });
     std::cout << total - failed << '/' << total << " tests passed\n";
     return failed ? 1 : 0;
