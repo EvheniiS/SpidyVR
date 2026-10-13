@@ -3,6 +3,7 @@
 #include "spidy/native_body.hpp"
 // The input bridge remains a separately verified, separately stoppable module.
 #include "spidy/body_calibration.hpp"
+#include "spidy/dive_toggle.hpp"
 #include "spidy/eye_resolution.hpp"
 #include "spidy/monitor_rate.hpp"
 #include "spidy/eye_snapshot.hpp"
@@ -42,7 +43,7 @@
 #include <mmsystem.h>
 using namespace spidy;
 struct XrConfig {
-    uint32_t magic = 0x53585243, version = 23, bytes = sizeof(XrConfig), pid{};
+    uint32_t magic = 0x53585243, version = 26, bytes = sizeof(XrConfig), pid{};
     // record and mover are no longer used: VR starts with the game, before
     // there is a player, and finds each new player itself (game_player).
     uint64_t base{}, queue{}, bridgeModule{}, rayModule{}, motionModule{}, record{}, mover{};
@@ -105,8 +106,12 @@ struct XrConfig {
     // game's flat frame), 1 low, 2 medium, 3 high (vr_settings::screenDepths);
     // and a spare word.
     uint32_t screenDepth = 2, spare{};
+    // Webs go along the controllers' pointers (1) or the hands' line (0;
+    // handLine); the swing model (SwingModel: 0 classic, 1 2.0; the
+    // launcher's SWING MODEL).
+    uint32_t controllerAim{}, swingModel{};
 };
-static_assert(sizeof(XrConfig) == 664);
+static_assert(sizeof(XrConfig) == 672);
 // Why the last frame had no gameplay (XrData::gate bits).
 enum GateReason : uint32_t {
     gateNoPlayer = 1,     // no save loaded, or a level change in progress
@@ -581,7 +586,7 @@ DWORD WINAPI run(void*) {
         uint64_t zipBefore{};
         // Walls the swing took the player onto, and jumps off them, by the
         // previous frame.
-        uint32_t wallsBefore{}, wallJumpsBefore{};
+        uint32_t wallsBefore{}, wallJumpsBefore{}, jumpOffsBefore{}, surgesBefore{};
         // Punches each hand had landed by the previous frame.
         bool punchStarted{};
         uint64_t punchesBefore[2]{};
@@ -628,6 +633,7 @@ DWORD WINAPI run(void*) {
         uint64_t shotsBefore[2]{};
         uint64_t submittedFrames{};
         uint64_t previousPresentedGeneration{};
+        double lastNewPairMs = -1; // when the last new pair was submitted (QPC, ms); -1 after the game screen
         // The player's standing eye height above the floor: it rises at once
         // to a higher head and sinks a centimetre a second, so crouching
         // does not shrink the body.
@@ -676,6 +682,12 @@ DWORD WINAPI run(void*) {
         // thug pulled in the air, a perfect dodge).
         SlowMoments moments;
         StickPress slowPress;
+        // The dive: the right thumbstick's click in free flight (DiveToggle).
+        // While a dive can start or is on, that click is the dive's and not
+        // the game's LB + RB (pullPress).
+        StickPress divePress;
+        DiveToggle dive;
+        bool diveOwnsStick{};
         SlowMotionData slowCounts;
         uint64_t slowSteppedMs = GetTickCount64();
         auto stepSlowMotion = [&](float seconds, bool pressed, bool allowed) {
@@ -751,6 +763,7 @@ DWORD WINAPI run(void*) {
             rig.flips(values.flips);
             rig.flipSpeed(static_cast<float>(values.flipSpeed) * 3.14159265f / 180);
             rig.triggerWebs(values.triggerWebs);
+            rig.handAim(!config.controllerAim);
             rig.standOnWalls(values.standOnWalls);
             native_hud::setSize(values.hud);
             if (swingStarted && swingSettings) {
@@ -761,6 +774,7 @@ DWORD WINAPI run(void*) {
                 s.gravity = vr_settings::gravity(values.weight);
                 s.walls = !(config.options & 16384);
                 s.physical = values.physicalWebs;
+                s.model = config.swingModel;
                 if (const auto code = swingSettings(&s)) {
                     const auto text = "VR settings: the swing did not take them (" + std::to_string(code) + ")";
                     message(3, 0, text.c_str());
@@ -1111,6 +1125,18 @@ DWORD WINAPI run(void*) {
                                    slowPress.update(frame.seconds, slowAllowed, frame.hands[0].stickClick,
                                                     frame.hands[1].stickClick),
                                    slowAllowed);
+                    // The dive, in flight Spidy owns with no web attached, as the
+                    // latest swing sample has it; a pulse in both hands as it starts.
+                    const bool diveFree = slowAllowed && swingStarted && swingState.owned &&
+                                          !swingState.webs[0].attached && !swingState.webs[1].attached &&
+                                          game_swing::airborne(swingState, now.QuadPart, frequency.QuadPart);
+                    if (dive.update(divePress.update(frame.seconds, slowAllowed, frame.hands[1].stickClick,
+                                                     frame.hands[0].stickClick),
+                                    diveFree) == DiveToggle::Change::started) {
+                        runtime.haptic(0, .3f);
+                        runtime.haptic(1, .3f);
+                    }
+                    diveOwnsStick = diveFree || dive.diving();
                     if (motion.active && !raysStarted) {
                         native_rays::Config rays;
                         rays.pid = config.pid;
@@ -1152,6 +1178,7 @@ DWORD WINAPI run(void*) {
                                 ? frame.seconds
                                 : 1.f / 90.f;
                         input.jump = motion.swing.jump;
+                        input.dive = dive.diving();
                         input.move = motion.swing.move;
                         input.trackingYaw = motion.swing.trackingYaw;
                         input.tilt = motion.swing.tilt;
@@ -1163,6 +1190,7 @@ DWORD WINAPI run(void*) {
                             const auto& hand = motion.swing.hands[i];
                             input.hands[i] = {hand.aim, hand.gripRelativeToHead, hand.tracked, hand.trigger,
                                               hand.grip};
+                            input.fists[i] = hand.fist;
                         }
                         check(submitSwing(&input), "Tracked swing input");
                         check(sampleSwing(&swingState), "Native swing feedback");
@@ -1218,7 +1246,7 @@ DWORD WINAPI run(void*) {
                             if (attached && swingState.zips > zipBefore && !grabbing)
                                 runtime.haptic(i, 1);
                             attachedBefore[i] = attached;
-                            webTimes.update(i, attached, swingState.webs[i].anchor, webWrist(motion.hands[i]),
+                            webTimes.update(i, attached, swingState.webs[i].anchor, webShooterPoint(motion.grips[i], i),
                                             frame.predictedDisplayTime);
                         }
                         zipBefore = swingState.zips;
@@ -1235,13 +1263,25 @@ DWORD WINAPI run(void*) {
                         catchesBefore = grabState.catches;
                         // Onto a wall, and off it with a jump: both hands feel it.
                         if (input.focused && swingState.status &&
-                            (swingState.walls > wallsBefore || swingState.wallJumps > wallJumpsBefore)) {
-                            const float pulse = swingState.wallJumps > wallJumpsBefore ? .6f : .45f;
+                            (swingState.walls > wallsBefore || swingState.wallJumps > wallJumpsBefore ||
+                             swingState.jumpOffs > jumpOffsBefore)) {
+                            // A jump off a swing (swing model 2.0) feels like one off a wall.
+                            const float pulse =
+                                swingState.wallJumps > wallJumpsBefore || swingState.jumpOffs > jumpOffsBefore ? .6f
+                                                                                                                : .45f;
                             runtime.haptic(0, pulse);
                             runtime.haptic(1, pulse);
                         }
+                        // The momentum meter reaching its high stage (swing model 2.0):
+                        // a light pulse in both hands.
+                        if (input.focused && swingState.status && swingState.surges > surgesBefore) {
+                            runtime.haptic(0, .35f);
+                            runtime.haptic(1, .35f);
+                        }
                         wallsBefore = swingState.walls;
                         wallJumpsBefore = swingState.wallJumps;
+                        jumpOffsBefore = swingState.jumpOffs;
+                        surgesBefore = swingState.surges;
                         // Every landed blow, a fist's or a web strike's: the hand
                         // that threw it kicks, as hard and as long as the blow was
                         // (a jab 60 ms, a blow that sends him flying 180 ms and the
@@ -1374,7 +1414,7 @@ DWORD WINAPI run(void*) {
                                 hand.tracked = motion.swing.hands[i].tracked;
                                 hand.attachedAt = webTimes[i].attachedAt;
                                 hand.anchor = trail ? trailEnds[i] : swingState.webs[i].anchor;
-                                hand.wrist = webWrist(motion.hands[i]);
+                                hand.wrist = webShooterPoint(motion.grips[i], i);
                             }
                             native_webs::submit(webs, 200);
                         }
@@ -1472,7 +1512,8 @@ DWORD WINAPI run(void*) {
                         }
                         // The game's LB + RB, its web pull where it shows the two
                         // (a door, a grate): both web buttons on the thing, which
-                        // no web holds on, and a yank; or the right stick's click.
+                        // no web holds on, and a yank; or the right stick's click
+                        // where it does not dive.
                         std::array<WebPullHand, 2> pulling{};
                         bool free = swingStarted && swingState.grounded && !calibrationInput;
                         for (unsigned i = 0; i < 2; ++i) {
@@ -1491,7 +1532,7 @@ DWORD WINAPI run(void*) {
                             runtime.haptic(1, 1);
                             message(3, 0, "Web pull - the game's LB + RB, for as long as you hold both web buttons");
                         }
-                        walk.pull = pullPress.update(frame.seconds, playing, frame.hands[1].stickClick,
+                        walk.pull = pullPress.update(frame.seconds, playing && !diveOwnsStick, frame.hands[1].stickClick,
                                                      frame.hands[0].stickClick) ||
                                     (yanked && playing);
                         // The right stick pushed down heals, in the air as on
@@ -1946,11 +1987,12 @@ DWORD WINAPI run(void*) {
                             }
                             auto pose = rendered.hands[hand];
                             pose.position += travel;
+                            const Vec3 shooter = webShooterPoint(rendered.grips[hand], hand) + travel;
                             // With the player's body on the hero, the game draws its own hands.
                             if (!native_body::drawn())
                                 addTrackedHand(vertices, pose, hand, rendered.swing.hands[hand].grip,
                                                web.attached != 0);
-                            shooters[hand] = webWrist(pose);
+                            shooters[hand] = shooter;
                             shooterHands |= 1u << hand;
                             if (gameWeb) {
                                 if (web.attached &&
@@ -1960,13 +2002,13 @@ DWORD WINAPI run(void*) {
                                 }
                                 continue;
                             } else if (web.attached) {
-                                line.start = webWrist(pose);
+                                line.start = shooter;
                                 line.end = web.anchor;
                                 line.slack = web.tension > 0 ? 0.f
                                                              : std::max(web.length - length(line.end - line.start), 0.f);
                                 line.extended = WebAnimation::extended((shown - timing.attachedAt) * 1e-9f);
                                 appendWeb(vertices, line, viewer, pixelAngle);
-                            } else if (WebAnimation::released((shown - timing.releasedAt) * 1e-9f, webWrist(pose),
+                            } else if (WebAnimation::released((shown - timing.releasedAt) * 1e-9f, shooter,
                                                               timing.anchor, line)) {
                                 appendWeb(vertices, line, viewer, pixelAngle);
                             }
@@ -2164,6 +2206,7 @@ DWORD WINAPI run(void*) {
                 InterlockedIncrement64(&SpidyXrTimingData.sequence);
                 for (unsigned i = 0; i < 10; ++i)
                     SpidyXrTimingData.stages[i].add(stages[i]);
+                SpidyXrTimingData.loop(timing.total);
                 InterlockedIncrement64(&SpidyXrTimingData.sequence);
             }
             // Count only a successful xrEndFrame containing a projection layer.
@@ -2188,7 +2231,8 @@ DWORD WINAPI run(void*) {
                                 : "VR active - A jumps (hold: Charge Jump), B dodges, Y interacts (hold: step "
                                   "up to it), X opens the game menu, the menu button pauses, the left "
                                   "stick's click slows time; a trigger pulled at your temple scans; right "
-                                  "stick: click is the game's LB + RB, down heals, up is its LT + RT (vents)");
+                                  "stick: click dives in the air and elsewhere is the game's LB + RB, down "
+                                  "heals, up is its LT + RT (vents)");
                 }
             }
             {
@@ -2199,15 +2243,29 @@ DWORD WINAPI run(void*) {
                 if (submitted) {
                     ++d.submitted;
                     // Game-screen frames are not eye images: neither new nor reused ones.
+                    LARGE_INTEGER qpc{}, qpcFrequency{};
+                    QueryPerformanceCounter(&qpc);
+                    QueryPerformanceFrequency(&qpcFrequency);
+                    const double nowMs = 1000.0 * static_cast<double>(qpc.QuadPart) /
+                                         static_cast<double>(qpcFrequency.QuadPart);
                     if (drawn == Presentation::gameScreen || drawn == Presentation::stereoScreen) {
                         ++d.screenSubmitted;
                         d.stereoSubmitted += drawn == Presentation::stereoScreen;
+                        lastNewPairMs = -1;
                     } else if (d.generation != previousPresentedGeneration) {
                         ++d.uniqueSubmitted;
                         lastNewImageMs = lastPresentedMs;
                         previousPresentedGeneration = d.generation;
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        SpidyXrTimingData.newPair(lastNewPairMs < 0 || submittedFrames < 30 ? 0 : nowMs - lastNewPairMs,
+                                                  timing.period);
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        lastNewPairMs = nowMs;
                     } else {
                         ++d.reusedSubmitted;
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
+                        SpidyXrTimingData.reused();
+                        InterlockedIncrement64(&SpidyXrTimingData.sequence);
                     }
                 }
                 InterlockedIncrement64(&d.sequence);
@@ -2292,7 +2350,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
     if (worker)
         return 1000; // one bounded XR session per process during validation
     if (!read(reinterpret_cast<uintptr_t>(input), &config, sizeof(config)) || config.magic != 0x53585243 ||
-        config.version != 23 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
+        config.version != 26 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
         config.runtime[std::size(config.runtime) - 1] ||
         config.base != reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr)) ||
         !GetModuleHandleW(L"Spider-Man.exe") || !config.queue || !config.bridgeModule || !config.rayModule ||
@@ -2300,7 +2358,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
         !validEyeUpscale(config.upscale) || !validMonitorRate(config.monitorRate) ||
         config.screenSize > 2 || config.screenDepth > 3 || config.spare || config.smoothTurn > 360 ||
         config.hud > 3 || config.flipSpeed < 90 ||
-        config.flipSpeed > 480 || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
+        config.flipSpeed > 480 || config.controllerAim > 1 || config.swingModel > 1 || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
         config.swingSpeed > 65 || (config.durationMs && config.durationMs < 2000) || config.durationMs > 25000 ||
         (config.eyeSize && !validEyeSize(config.eyeSize)) || !validRenderScale(config.renderScale) ||
         (config.eyeSize && config.renderScale != 100) || config.weight < 40 || config.weight > 300)

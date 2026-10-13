@@ -73,7 +73,8 @@ class WebTimeline {
   private:
     std::array<Hand, 2> hands_{};
 };
-// Web shooters sit on the palm side of the wrist, behind the grip centre.
+// The lab's web start, from a hand's aim-oriented pose (the game takes the
+// shooter from the grip: webShooterPoint in swing.hpp).
 inline Vec3 webWrist(Pose hand) {
     return hand.position + hand.orientation.rotate({0, -.025f, .03f});
 }

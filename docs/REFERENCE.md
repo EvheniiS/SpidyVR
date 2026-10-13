@@ -205,6 +205,33 @@ The live experiment updated these fields but did not prevent the post-lease
 vertical drop. This experiment is disabled by default. The swing controller
 instead keeps control of flight after web release and returns it on landing.
 
+## The game's dive
+
+Researched October 10 from this executable and the game's config assets,
+read offline with `tools/game_configs.py` (which documents the archive and
+config formats). What the game does, and what Spidy takes from it
+(`SwingConfig::dive*`, `fallCarry`, `DiveToggle`):
+
+| Fact | Where | Value |
+|---|---|---|
+| Free fall (the player falling, no swing) | `herotraversalconfigsunsetoverdrive.config` root: `StandardFallGravity`, `StandardFallTerminalVelocity`, `StandardFallTermVelAccel`, `StandardFallTerminalVelocityMax` | 26 m/s², terminal 42 m/s, rising 8 m/s per s to 100 |
+| A swing's speed limit from the fall it catches | `hero_swingsetup_standard.config` `MotionParams/SpeedParams`: `FallSpeedThresholdMin/Mid/Max` to `TerminalVelocityHorzMin/Mid/Max` | fall 6, 16, 42 m/s: 24, 27.25, 40 m/s horizontal (`InSpeedCarryover` 0.83, `TerminalVelocityPureMax` 80) |
+| The swing's gravity on its way down | same, `GravityParams`: `GravityFallInit`, `GravityFallHold`, `GravityFallTurn` | -24, -15, -24 |
+| A dive's web: where the game aims it | same, `SearchParams`: `IdealAngleDive`, `IdealAngleDiveSpeedMin/Max`, `LineLengthDiveTweak` | 20°, 12-40 m/s, 1.2x line length |
+| The dive's states and fall modes | RTTI and strings | `Hero::HeroStateAirDive(Local)`, `kFallModeSkydive`, `kFallModeFastFall`, `kDiveFall`, `HeroDiveStartEvent`, `HeroDiveEndEvent`, `Dive To Swing` |
+| Momentum from falling and diving | reflection field names at `0x3ac80c0` (all floats; hashes at `0x3ac8390`), beside `MaxMomentum`, `MomentumStages`, `FallData` | `FallSpeedMin/Max`, `FallTimeMin/Max/Bias`, `FallGainMin/Max`, `FallMomentumCapMin/Max`, `DiveTimeMin/Max/Bias`, `DiveGainMin/Max`, `DiveMomentumCapMin/Max`; no asset sets them, so they are compiled defaults, not read yet |
+| The dive's input | key binding names | `KEY_BINDING_PERCH_DIVE`: one action for leaving a perch and diving |
+
+Spidy flies the player with its own solver from a web's attachment until
+landing, so the game's dive state never runs there: the dive is the solver's,
+with the game's numbers. Its fastest is 65 m/s, the movement module's limit.
+Jumps and falls without a web are still the game's own fall.
+
+Asset archive facts (for `tools/game_configs.py`): `asset_archive/toc` lists
+771,677 assets; a toc id is CRC-64 (seeded with its own polynomial, no final
+xor) of the lower-case path, shifted right 2 with bit 63 set; `dag` holds the
+paths (its ids differ). Archives are DSAR with LZ4 blocks.
+
 ## OpenXR
 
 Dependency: [Khronos OpenXR SDK 1.1.49](https://github.com/KhronosGroup/OpenXR-SDK/tree/977f6675bc0057d5a54ed290cb5c71c699b1c0ab),

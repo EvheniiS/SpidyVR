@@ -22,6 +22,9 @@ struct Config {
     // grabbing, as before). Only kinds the game adapter can move take effect.
     uint32_t grabKinds{};
 };
+// The movement module's own limit: every speed the VR settings offer, and
+// the fastest a dive goes.
+constexpr float motionSpeedLimit = 65;
 inline SwingConfig physicsConfig(const Config& c) {
     SwingConfig physics;
     physics.maxSpeed = c.maxSpeed;
@@ -34,6 +37,7 @@ inline SwingConfig physicsConfig(const Config& c) {
     physics.walls = true;
     // And webs are ropes (Settings::physical).
     physics.physical = true;
+    physics.diveSpeedMax = motionSpeedLimit;
     return physics;
 }
 // MoverStandard applies a velocity command during the physics step after the
@@ -113,14 +117,15 @@ struct Hand {
     float trigger{}, grip{};
 };
 struct Command {
-    uint32_t magic = 0x5357434d, version = 4, bytes = sizeof(Command), focused{};
+    uint32_t magic = 0x5357434d, version = 6, bytes = sizeof(Command), focused{};
     uint64_t serial{};
     uint32_t leaseMs = 100, jump{};
     Hand hands[2];
     Vec3 move{};
     float trackingYaw{};
     float sampleSeconds = 1.f / 90.f;
-    uint32_t reserved{};
+    // Version 5: a dive is wanted (Input::dive). Earlier versions: zero.
+    uint32_t dive{};
     uint64_t sampleTimeNs = 1;
     // Version 3: a flip's tilt of the tracking space (Input::tilt). Version 2
     // (commandBytesV2, the probes') ends before it: level.
@@ -130,8 +135,12 @@ struct Command {
     // (commandBytesV3) ends before them.
     float leap{};
     Vec3 look{};
+    // Version 6: each hand's knuckles (HandInput::fist); the hands' aims start
+    // at the web shooters. Versions 4 and 5 (commandBytesV5) end before them:
+    // punches at the aim's point.
+    Vec3 fists[2]{};
 };
-constexpr uint32_t commandBytesV2 = 168, commandBytesV3 = 184;
+constexpr uint32_t commandBytesV2 = 168, commandBytesV3 = 184, commandBytesV5 = 200;
 struct WebState {
     uint32_t attached{}, bodyId{};
     Vec3 anchor{};
@@ -144,7 +153,7 @@ enum class Surface : uint32_t {
     game, // the game's wall crawl (its actor turned onto the surface)
 };
 struct Data {
-    uint32_t magic = 0x53574441, version = 4, bytes = sizeof(Data), status{};
+    uint32_t magic = 0x53574441, version = 6, bytes = sizeof(Data), status{};
     int64_t sequence{};
     uint64_t qpc{}, steps{}, controlled{}, serial{}, attaches{}, releases{}, zips{}, world{}, sourceStep{};
     Vec3 position{}, velocity{}, requested{};
@@ -166,9 +175,19 @@ struct Data {
     Vec3 wallNormal{};
     float wallDistance{};
     uint32_t walls{}, wallJumps{}, mount{};
+    // Version 5: the elastic webs' catches and the jumps off a swing so far,
+    // the swing model in use (SwingModel), and the last swing that ended
+    // (SwingLedger; its `swings` counts them). Version 6: the times the
+    // momentum meter reached its high stage (Swing::surges), the ledger's
+    // speed boost and momentum, and the momentum meter now.
+    uint32_t catches{}, jumpOffs{}, model{}, surges{};
+    SwingLedger last{};
+    float momentum{};
+    uint32_t reserved{};
 };
-static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 200 &&
-              offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3);
+static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 224 &&
+              offsetof(Command, tilt) == commandBytesV2 && offsetof(Command, leap) == commandBytesV3 &&
+              offsetof(Command, fists) == commandBytesV5);
 // SpidySwingSettings: what the VR settings (the SPIDY VR tab in the game's
 // Settings) change during play.
 // grab: webs catch props and thugs (a swing started without them starts
@@ -183,18 +202,21 @@ static_assert(sizeof(Config) == 64 && sizeof(Hand) == 52 && sizeof(Command) == 2
 // physical: webs are ropes (SwingConfig::physical: they bend round edges,
 // are held by the hand and pay out on the ground); off, as before October
 // 12. Version 4 (settingsBytesV4) ends before it and leaves the webs as they
-// are.
+// are. Version 6, model: the swing model (SwingModel; the launcher's SWING
+// MODEL); version 5 (settingsBytesV5) ends before it and leaves the model as
+// it is, classic from the start.
 struct Settings {
-    uint32_t magic = 0x53575354, version = 5, bytes = sizeof(Settings), grab = 1;
+    uint32_t magic = 0x53575354, version = 6, bytes = sizeof(Settings), grab = 1;
     float maxSpeed = 32;
     uint32_t airWebs = 1;
     float gravity = 6;
     uint32_t walls = 1;
     uint32_t physical = 1;
+    uint32_t model{}, reserved{};
 };
-constexpr uint32_t settingsBytesV3 = 28, settingsBytesV4 = 32;
-static_assert(sizeof(Settings) == 36 && offsetof(Settings, walls) == settingsBytesV3 &&
-              offsetof(Settings, physical) == settingsBytesV4);
+constexpr uint32_t settingsBytesV3 = 28, settingsBytesV4 = 32, settingsBytesV5 = 36;
+static_assert(sizeof(Settings) == 44 && offsetof(Settings, walls) == settingsBytesV3 &&
+              offsetof(Settings, physical) == settingsBytesV4 && offsetof(Settings, model) == settingsBytesV5);
 // Physical webs (SpidyRopeData): what the ropes did, for the session report.
 struct Ropes {
     uint32_t magic = 0x53575250, version = 1, bytes = sizeof(Ropes), physical{};
@@ -209,11 +231,11 @@ struct Ropes {
     float free[2]{}, whole[2]{};
 };
 static_assert(sizeof(Ropes) == 80);
-// The movement module's own limit: every speed the VR settings offer.
-constexpr float motionSpeedLimit = 65;
 // The most gravity a swing takes, m/s^2: every weight the VR settings offer.
 constexpr float maxGravity = 30;
-static_assert(sizeof(WebState) == 28 && sizeof(Data) == 272 && offsetof(Data, wall) == 240);
+static_assert(sizeof(WebState) == 28 && sizeof(SwingLedger) == 96 && sizeof(Data) == 392 &&
+              offsetof(Data, wall) == 240 && offsetof(Data, catches) == 272 && offsetof(Data, last) == 288 &&
+              offsetof(Data, momentum) == 384);
 // The player is in the air: Spidy's own flight, or the game's jump or fall,
 // where the mover is unsupported and in its airborne mode (collision flags
 // 0x10: the steps the game's air state runs). A perch, a wall crawl and a
@@ -255,10 +277,11 @@ inline bool valid(const Command& c) {
     const float tilt = t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w;
     if (c.magic != 0x5357434d ||
         !((c.version == 2 && c.bytes == commandBytesV2) || (c.version == 3 && c.bytes == commandBytesV3) ||
-          (c.version == 4 && c.bytes == sizeof(c))) ||
+          ((c.version == 4 || c.version == 5) && c.bytes == commandBytesV5) || (c.version == 6 && c.bytes == sizeof(c))) ||
         !std::isfinite(c.leap) || c.leap < 0 || c.leap > 1 || !finite(c.look) || length(c.look) > 1.01f ||
         !c.serial || c.focused > 1 || c.jump > 1 || c.leaseMs > 250 || (c.focused && !c.leaseMs) ||
-        !finite(c.move) || length(c.move) > 1.001f || !std::isfinite(c.trackingYaw) || c.reserved ||
+        !finite(c.move) || length(c.move) > 1.001f || !std::isfinite(c.trackingYaw) || c.dive > 1 ||
+        (c.version < 5 && c.dive) || !finite(c.fists[0]) || !finite(c.fists[1]) ||
         !std::isfinite(c.sampleSeconds) || c.sampleSeconds <= 0 || c.sampleSeconds > .1f ||
         (c.focused && !c.sampleTimeNs) || !std::isfinite(tilt) || tilt < .99f || tilt > 1.01f)
         return false;
@@ -329,6 +352,7 @@ inline Input input(const Command& c) {
     Input out;
     out.focused = c.focused != 0;
     out.jump = c.jump != 0;
+    out.dive = c.version >= 4 && c.dive != 0;
     out.move = c.move;
     out.trackingYaw = c.trackingYaw;
     const float n =
@@ -341,7 +365,7 @@ inline Input input(const Command& c) {
     }
     for (unsigned i = 0; i < 2; ++i)
         out.hands[i] = {c.hands[i].aim, c.hands[i].relative, c.hands[i].tracked != 0, c.hands[i].trigger,
-                        c.hands[i].grip};
+                        c.hands[i].grip, c.version >= 6 ? c.fists[i] : Vec3{}};
     return out;
 }
 } // namespace spidy::game_swing

@@ -231,6 +231,11 @@ int main() {
         args = sessionArguments(options, L"r.json", L"", L"");
         check(args.size() == 8 && args[7] == L"--trigger-webs", "the web button on the trigger");
         options = {};
+        check(!options.controllerAim, "controller aim in a new launcher");
+        options.controllerAim = true;
+        args = sessionArguments(options, L"r.json", L"", L"");
+        check(args.size() == 8 && args[7] == L"--controller-aim", "webs aimed with the controller");
+        options = {};
         check(options.standOnWalls, "no standing on walls in a new launcher");
         args = sessionArguments(options, L"r.json", L"", L"");
         check(args.size() == 7, "standing on walls, the default, said to the session");
@@ -326,6 +331,11 @@ int main() {
                   options.swingSpeed == 65 && options.snapTurn == 45 && options.smoothTurn == 360 &&
                   options.haptics == 0 && options.weight == 40 && options.hud == 3 && options.flipSpeed == 480,
               "values outside their ranges, unreadable ones and unknown keys");
+        const auto before = options;
+        check(!headsetSettings("VR settings from the headset: aim_markers=0 web_grab=0 air_webs=0 swing_speed=0 "
+                               "weight=0 snap_turn=0 haptics=0 flip_speed=0 hud=0",
+                               options) && options == before,
+              "a game that closed before VR read its settings zeroed the next session's");
     });
     test("a T-pose calibration in the headset sizes every next session, until Redo", [] {
         SessionOptions options;

@@ -93,23 +93,232 @@ struct SwingConfig {
     //   body that had walked on back by all of that once it left the ground.
     bool physical = false;
     float bendOut = .06f, bendClearance = .35f, bendRope = .5f, handHeight = .6f, maxHandSpeed = 8;
+    // A dive (Input::dive) in free flight: the game's own free fall
+    // (herotraversalconfig: StandardFallGravity 26 m/s^2, terminal velocity
+    // 42 m/s, rising at StandardFallTermVelAccel 8 m/s per second toward
+    // StandardFallTerminalVelocityMax, 100 in the game and the mover's limit here).
+    float diveGravity = 26, diveSpeed = 42, diveSpeedRamp = 8, diveSpeedMax = 65;
+    // Speed over maxSpeed (a dive's, or what a web carries out of one) bleeds
+    // off at this rate once nothing holds it up.
+    float overspeedDecay = 4;
+    // Swing model 2.0 (SwingModel; these defaults are the classic swing of
+    // 0.2.11, which has none of it):
+    // The elastic web. A rope pulled taut while the body moves away from its
+    // anchor faster than catchMin (a web catching a fall, a slack rope after
+    // a yank) gives like an elastic band instead of cutting that speed in one
+    // step: it stretches, a spring of catchFrequency (Hz), and springs back
+    // to its length, flinging the body toward the anchor at catchBounce of
+    // the speed it caught. Of the rest, catchKeep goes on along the swing
+    // (the fall turns into the swing: the game keeps a caught speed too, its
+    // rope only bending the velocity). catchFrequency 0: a rigid web, which
+    // cuts that speed at once.
+    float catchMin = 2, catchFrequency = 0, catchBounce = .4f, catchKeep = 1;
+    // A faster catch stiffens the web so it stretches catchDepth m at most
+    // (the October 11 headset report: 6-7 m at 65 m/s, a bungee). 0: no limit.
+    float catchDepth = 0;
+    // The winch takes in only rope the body has come in on. Without it a
+    // winch held on the ground (where the game holds the body) wound 9 m of
+    // rope in that the body never followed, and the take-off pulled it all
+    // in at once at the speed limit (October 11 headset report).
+    bool reelFollows = false;
+    // The most a winch speeds the body up round its anchor, times gravity a
+    // second. A rope wound in while the body swings round its end spins it up
+    // as a skater pulling her arms in: by speed^2 / rope x the winch's rate,
+    // at 40 m/s on a 20 m rope (the game's 16 m/s winch) 130 m of height a
+    // second. In the Oct 13 2026 headset session that spin was worth a median
+    // 30 m of height a reel (64 at p90), and fast reels threw the player up.
+    // The winch still draws the body in at its rate and lifts it (a reel from
+    // a hang is as before); only the spin is limited, and it adds nothing
+    // above the speed limit. A hand pulling on its rope is not limited. 0: no
+    // limit.
+    float reelSpin = 0;
+    // The swing's pump. While a taut web holds the body up, gravity is
+    // swingFall times as strong as it falls and swingRise times as strong as
+    // it rises, so a swing may leave faster than it came in. 1 and 1: a swing
+    // never leaves faster than it came.
+    float swingFall = 1, swingRise = 1;
+    // The game's swing gravity instead (Swing::swingGravity; hero_swingsetup
+    // GravityParams, read in the game's code, Oct 13 2026): swingFall times
+    // gravity on the way down (the game's 24 of 26), half that for the first
+    // quarter second after a web attaches; on the way up the game's curve by
+    // the velocity's pitch, the speed and the rope's length, times swingRise;
+    // swinging back from the top, 14 and 22 of 26. The game's upswing is light
+    // with the stick held forward along the way and heavy without it; no stick
+    // steers a swing here (the left stick flips), so a fixed swingIntent, 0 to
+    // 1, stands for it: 0.4 lets a swing held to its top come back about as
+    // high as it fell (spidy_swing_bench: 0.3 loses height, 0.5 gains it).
+    bool swingCurve = false;
+    float swingIntent = .4f;
+    // A jump with a web attached in the air leaps off the swing (the game's
+    // release, 0xac17aa, by the velocity's pitch): every web lets go, the
+    // body's speed up gains jumpOffUp and is at least jumpOffFloor, and it
+    // goes jumpOffBoost faster along the level, most at 30-35 degrees up and
+    // none below 10 or from 55 (its ramp). Each is the low band's below
+    // jumpOffMid degrees, the middle one's to jumpOffHigh and the high one's
+    // from there; game m/s (gameFall). The game pulls harder after a jump
+    // (jumpOffGravity); the speed up is set so the body rises as high as it
+    // would there. All 0: the jump does nothing there. The gains need a web
+    // held jumpOffSwing seconds: sooner, the jump lifts only to the floor.
+    // Added on any web, a grip and A pressed together climbed 500 m in 20 s
+    // (spidy_swing_bench); each gain now takes a swing.
+    float jumpOffUp[3]{}, jumpOffFloor[3]{}, jumpOffBoost[3]{}, jumpOffGravity[3]{26, 26, 26};
+    float jumpOffSwing = 0;
+    float jumpOffMid = 25, jumpOffHigh = 50;
+    // 2.0's numbers from the game are the game's own, m/s and m/s^2 under its
+    // free fall of gameFall (herotraversalconfig StandardFallGravity 26
+    // m/s^2), and the solver scales them to the player's gravity so that they
+    // lift the body as high: speeds by sqrt(gravity / gameFall), 0.61 at real
+    // gravity, accelerations by gravity / gameFall.
+    float gameFall = 26;
+    // The swing's speed boost (hero_swingsetup_standard SpeedParams, read in
+    // the game's code, Oct 13 2026: SpeedBoostTarget 10 m/s, an absolute
+    // speed; SpeedBoostAccel 20 m/s^2, starting at 8 and rising by
+    // SpeedBoostAccelAccel 120 m/s^3). A slow swing speeds up along its way
+    // from a web's attaching to the bottom of its arc, while it goes slower
+    // than boostTarget (a rising body: along the level). It lifts a slow start;
+    // at swinging speeds it does nothing. boostTarget 0: no boost.
+    float boostTarget = 0, boostStart = 8, boostAccel = 20, boostJerk = 120;
+    // The momentum meter (hero_swingconfig MomentumConfig; Swing::momentum):
+    // 0 to 5, raised by swinging, letting go on the way up, jumping off,
+    // yanks and dives, falling away in the air within a second of the last
+    // rise and on the ground after 2 s. From momentumHigh (its stage 2 at 4)
+    // the swing's speed limit is momentumLimit times maxSpeed (its
+    // TerminalVelocityHorzFloor 28 over the 24 of a swing with none) and a
+    // taut web's gravity momentumGravity times (its GravityScale). Its clock
+    // runs momentumTime times slower than the game's: real gravity's swings
+    // take about 1.5 times as long as the game's (24 m/s^2), and the meter
+    // fell away between them (spidy_swing_bench: 2.5 after nine jumps off in
+    // 20 s). false: no meter.
+    bool momentum = false;
+    float momentumHigh = 4, momentumLimit = 28.f / 24, momentumGravity = .5f, momentumTime = 1;
+};
+// What one swing did to the body's speed (Swing::lastSwing): from a web
+// attaching while none was to the last one letting go. Energies per unit
+// mass, m^2/s^2; over gravity, metres of height. With gravity's work
+// (gravity x drop) they add up to exit^2/2 - entry^2/2, but for what the game
+// changed between predictions.
+struct SwingLedger {
+    uint32_t swings{}; // swings finished so far, this one included
+    uint32_t snaps{};  // steps in which a rope cut more than catchMin of the body's speed at once
+    uint32_t catches{}, yanks{}, jumpOff{};
+    float seconds{}, entry{}, exit{}, peak{};
+    float fall{}; // speed down as the first web attached, m/s
+    float drop{}; // height lost from the first attachment to the release, m
+    // rope: what rigid ropes cut from the body (snapLoss: in snaps); reel:
+    // what winding a rope in gave; elastic: what stretching ropes took and
+    // their springing back gave (net); sling: what they kept along the
+    // swing; yank: the yanks; pump: the swing's own gravity, over the
+    // player's; steer: the stick; cap: what the speed limit cut; jump: the
+    // jump off the swing; boost: the swing's speed boost. Steps on the
+    // ground are not counted (the game holds the body there).
+    float rope{}, snapLoss{}, reel{}, elastic{}, sling{}, yank{}, pump{}, steer{}, cap{}, jump{};
+    float deepest{};  // the most a rope stretched, m
+    float boost{};
+    float momentum{}; // the momentum meter as the swing ended
 };
 // The edges one web bends round at most (SwingConfig::physical).
 constexpr int maxBends = 6;
+
+// The swing models (the launcher's SWING MODEL). classic: 0.2.11's swing,
+// SwingConfig's defaults. v2: the elastic web (3 m deep at most), the game's
+// swing gravity, the jump off the swing, the speed boost and the momentum
+// meter, from the game's code (Oct 13 2026) and scaled to the player's
+// gravity (SwingConfig::gameFall); and a winch that waits for the body and
+// spins it up gently (reelSpin).
+enum class SwingModel : uint32_t { classic, v2 };
+inline void applySwingModel(SwingConfig& c, SwingModel model) {
+    const SwingConfig classic;
+    const bool v2 = model == SwingModel::v2;
+    c.catchFrequency = v2 ? .6f : classic.catchFrequency;
+    // No bounce: the game's rope never springs the body back toward the
+    // anchor. Unbounced, the spring is nearly critically damped and stiffer;
+    // 0.6 Hz gives as before (1.6 m at a 30 m/s catch, deepest at 0.27 s,
+    // near the game's 0.33 s of rope it does not hold to its length).
+    c.catchBounce = v2 ? 0.f : classic.catchBounce;
+    c.catchKeep = v2 ? 1.f : classic.catchKeep;
+    c.catchDepth = v2 ? 3.f : classic.catchDepth;
+    c.reelFollows = v2 || classic.reelFollows;
+    // 6.9 m/s^2 at real gravity: the session's reels would have spun up 11 m
+    // a reel (24 at p90); a reel slower than 0.43 x the rope's length in m/s
+    // (8.6 m/s on 20 m) is untouched.
+    c.reelSpin = v2 ? .7f : classic.reelSpin;
+    c.boostTarget = v2 ? 10.f : classic.boostTarget;
+    c.momentum = v2 || classic.momentum;
+    c.momentumTime = v2 ? 1.5f : classic.momentumTime;
+    c.swingCurve = v2 || classic.swingCurve;
+    c.swingFall = v2 ? 24.f / 26 : classic.swingFall;
+    c.swingRise = classic.swingRise;
+    // SwingReleaseParamSet Low / Mid / High: JumpBoost, VertFloorJump; the
+    // gravity after a jump (20 / 38 / 45); JumpBoostXZ 1.5. Bands at
+    // ReleaseAngleLowFinal 7 and HighStart 45 degrees (Fall, below -10, is
+    // Low's again).
+    constexpr float up[3]{8, 20, 24}, floor[3]{12, 22, 30}, after[3]{20, 38, 45}, along[3]{1.5f, 1.5f, 1.5f};
+    for (int i = 0; i < 3; ++i) {
+        c.jumpOffUp[i] = v2 ? up[i] : classic.jumpOffUp[i];
+        c.jumpOffFloor[i] = v2 ? floor[i] : classic.jumpOffFloor[i];
+        c.jumpOffGravity[i] = v2 ? after[i] : classic.jumpOffGravity[i];
+        c.jumpOffBoost[i] = v2 ? along[i] : classic.jumpOffBoost[i];
+    }
+    c.jumpOffSwing = v2 ? .5f : classic.jumpOffSwing; // the soft catch's end: a swing from here
+    c.jumpOffMid = v2 ? 7.f : classic.jumpOffMid;
+    c.jumpOffHigh = v2 ? 45.f : classic.jumpOffHigh;
+}
+// The game's swing carries a fall into the swing that catches it: its speed
+// limit for the swing rises with the fall speed when the web attaches
+// (hero_swingsetup_standard.config SpeedParams: falling at 6, 16 and 42 m/s,
+// the horizontal terminal velocity is 24, 27.25 and 40 m/s). The limit a
+// swing gets, as a multiple of the normal one: 1 up to 6 m/s, 5/3 from 42.
+inline float fallCarry(float fallSpeed) {
+    if (!std::isfinite(fallSpeed) || fallSpeed <= 6)
+        return 1;
+    const float terminal = fallSpeed < 16   ? 24 + (fallSpeed - 6) * (27.25f - 24) / (16 - 6)
+                           : fallSpeed < 42 ? 27.25f + (fallSpeed - 16) * (40 - 27.25f) / (42 - 16)
+                                            : 40;
+    return terminal / 24;
+}
+// The web shooter's nozzle, as Spider-Man's: on the palm side of the wrist,
+// at the heel of the hand (a right hand's grip frame: +y back toward the
+// forearm, +x toward the back of the hand; a left hand mirrors x). Webs leave
+// here, along the hand's line (handLine) or the controller's aim; the aim
+// pose itself sits at the knuckles.
+constexpr Vec3 webShooterFromGrip{-.02f, .075f, 0};
+inline Vec3 webShooterPoint(Pose grip, unsigned hand) {
+    const Vec3 o = webShooterFromGrip;
+    return grip.position + grip.orientation.rotate({hand == 0 ? -o.x : o.x, o.y, o.z});
+}
+// The hand's line, as Spider-Man's thwip: from the wrist straight through the
+// fist past the middle fingers' knuckles, the grip frame's -y (OpenXR's grip:
+// -z runs up the handle toward the thumb, +-x out of the palm), with the
+// handle's top as up. A natural, straight hand aims it; the controller's
+// pointer leaves its top by the thumb instead (Oct 11 2026: aims turned from
+// the pointer toward the palm by 15-90 degrees all missed the hand's line).
+inline Quat handLine(Quat grip) {
+    return grip * Quat::around({1, 0, 0}, -1.5707964f);
+}
 struct HandInput {
-    Pose aim{};                // world space, -Z forward
+    // World space, -Z forward: the hand's line (handLine) or the controller's
+    // aim, from the web shooter (webShooterPoint; trackedSwingInput).
+    Pose aim{};
     Vec3 gripRelativeToHead{}; // tracking meters, excludes artificial travel
     bool tracked{};
     // grip shoots and holds this hand's web; trigger reels it in (a free
     // hand's shoots a web ball). The controller's own grip and trigger unless
     // the player swapped them (trackedSwingInput).
     float trigger{}, grip{};
+    // World space: the knuckles (the controller's aim point), where punches
+    // land; the aim's point when it is not known.
+    Vec3 fist{};
 };
+inline Vec3 fistPoint(const HandInput& h) {
+    return finite(h.fist) && (h.fist.x != 0 || h.fist.y != 0 || h.fist.z != 0) ? h.fist : h.aim.position;
+}
 struct Input {
     std::array<HandInput, 2> hands{};
     Vec3 move{}; // world horizontal direction, magnitude <= 1
     float trackingYaw{};
-    bool focused = true, jump{};
+    // dive: a dive is wanted (the XR side's toggle); it acts only in free
+    // flight, with no web attached.
+    bool focused = true, jump{}, dive{};
     // A flip's tilt of the tracking space (Rig::tilt), the identity while level.
     Quat tilt{};
     // A charged leap let go of: its charge, above 0 up to 1, for as long as
@@ -188,6 +397,8 @@ enum class EventKind {
     Wrap,     // a web bent round an edge
     Unwrap,   // it came off its last one
     Leap,     // a charged leap left the ground; strength: its charge
+    Catch,    // an elastic web caught the body; strength: how fast it was going out
+    JumpOff,  // a jump left the swing (its webs' releases come first)
 };
 struct Event {
     EventKind kind;
@@ -220,6 +431,9 @@ class Swing {
     // A new gravity during play (the VR settings' weight), m/s^2, from the
     // next step.
     void setGravity(float gravity);
+    // The swing model (applySwingModel) from the next step. Ropes stretched
+    // by the elastic web keep their length.
+    void setModel(SwingModel);
     // Whether a clear shot attaches in the air at maximum reach from now on
     // (the VR settings); off, it misses. Webs already attached
     // keep their anchors.
@@ -276,8 +490,35 @@ class Swing {
     const SwingConfig& config() const {
         return config_;
     }
+    // The speed limit now: maxSpeed, or above it while a dive's speed lasts.
+    float speedLimit() const {
+        return limit_;
+    }
+    bool diving() const {
+        return diving_;
+    }
     const std::vector<Event>& events() const {
         return events_;
+    }
+    // The last swing that ended (SwingLedger), and the one going on now.
+    const SwingLedger& lastSwing() const {
+        return lastSwing_;
+    }
+    const SwingLedger& swing() const {
+        return swing_;
+    }
+    // How far each hand's rope is stretched beyond its length now (the
+    // elastic web), m.
+    float stretch(int hand) const {
+        return hands_[hand].stretch;
+    }
+    // The momentum meter (SwingConfig's momentum), 0 to 5, and how many times
+    // it has reached momentumHigh since the reset.
+    float momentum() const {
+        return momentum_;
+    }
+    uint32_t surges() const {
+        return surges_;
     }
 
   private:
@@ -288,9 +529,16 @@ class Swing {
         Vec3 previous{};
         float pullDistance{}, pullTime{}, obstructed{};
         float winch{}; // how fast this hand's rope shortened in the last step
+        Vec3 drawn{};  // the velocity toward the anchor the winch drew the body in at (reelSpin)
         // Physical webs: the hand from the body's centre, in the world, and
         // how fast it moved there in the latest input sample.
         Vec3 offset{}, rate{};
+        // The elastic web: how far the rope is stretched beyond its length
+        // (included in Web::length), how fast that grows, and how fast it
+        // grew in the last step.
+        float stretch{}, stretchSpeed{}, give{};
+        float omega{}; // the stretching rope's spring, rad/s (catchDepth stiffens it)
+        bool taut{};   // the rope held the body at the end of the last step
     };
     void inputs(float dt, const Input&, const WorldQueries&);
     void step(float dt, const Input&, const WorldQueries&, const World* collision);
@@ -318,6 +566,40 @@ class Swing {
     bool wrap(int i, Vec3 before, const RayHit& first, const WorldQueries&);
     // Takes web `i` off its last bend once the rope lies free of that edge.
     void unwrap(int i, const WorldQueries&);
+    // The elastic web for one step (SwingConfig's catch*): starts a catch on
+    // a rope pulled taut, or stretches and springs back one going on. What
+    // each rope's stretch kept to go on along the swing, per unit mass.
+    std::array<float, 2> stretchRopes(float dt);
+    // A jump with a web attached in the air (SwingConfig's jumpOff*).
+    void jumpOff();
+    // A taut web holding the body up, and the rope's angle from straight
+    // down at the most upright such web (degrees; 0 for none) and its length.
+    bool hung(float* angle = nullptr, float* rope = nullptr) const;
+    // The game's swing gravity on a taut web of this length now, as a share of
+    // the player's gravity (SwingConfig::swingCurve).
+    float swingGravity(float rope) const;
+    // The swing's speed boost for one step (SwingConfig's boost*).
+    void boostSwing(float dt);
+    // 2.0's game speeds at this player's gravity (SwingConfig::gameFall):
+    // speeds scale by this, accelerations by its square.
+    float gameScale() const;
+    // The momentum meter: a rise of `amount` up to `cap` (none once the meter
+    // is there); `retrigger`, the seconds this source waits after its last
+    // rise. And its fall for one step.
+    void gainMomentum(float amount, float cap, float* since = nullptr, float retrigger = 0);
+    void decayMomentum(float dt);
+    // Whether this step counts in the swing ledger: in a swing, off the ground.
+    bool counting() const {
+        return swinging_ && !body_.grounded;
+    }
+    // The swing ledger: a swing begins as a web attaches while none is, and
+    // ends as the last lets go.
+    void beginSwing();
+    void endSwing();
+    // Energy per unit mass a velocity change gave the body (negative: took).
+    static float gained(Vec3 before, Vec3 after) {
+        return .5f * (dot(after, after) - dot(before, before));
+    }
     // Rope lengths after winding each hand's rope in at its rate for a time,
     // which may be negative, within what the ropes and their anchors allow.
     std::array<float, 2> reeled(std::array<float, 2> rates, float seconds) const;
@@ -330,6 +612,8 @@ class Swing {
     std::array<HandState, 2> hands_{};
     std::vector<Event> events_;
     double accumulator_{};
+    // Raises or bleeds limit_ toward what this step allows (see overspeedDecay).
+    void steerLimit(float dt, const Input&);
     float sinceZip_ = 100, sinceLanding_ = 100, zipSpeed_{};
     Vec3 zipDirection_{};
     bool jumpHeld_{}, jumpQueued_{};
@@ -354,5 +638,24 @@ class Swing {
     // The step the input sample in hand is for (a hand's rate is no faster
     // than its travel over that step).
     float stepSeconds_{};
+    // limit_: the speed limit now. carry_: what the attached webs' swing
+    // allows (fallCarry at the attachment). diveTime_: seconds in this dive.
+    float limit_{}, carry_{}, diveTime_{};
+    bool diving_{};
+    SwingLedger swing_{}, lastSwing_{};
+    float swingStartY_{};
+    bool swinging_{};
+    // The speed boost's acceleration now.
+    float boostRamp_{};
+    // Where the swing is on its arc (the game's swing mode): 0 from a web's
+    // attaching to the bottom of its arc, 1 once a taut web carries the body
+    // up past it, 2 once it falls back from there. The seconds since a web
+    // attached.
+    int swingMode_{};
+    float sinceAttach_ = 100;
+    // The momentum meter, the seconds since it last rose, since each source
+    // raised it, and the times it has reached momentumHigh.
+    float momentum_{}, sinceMomentum_ = 100, sinceLetGo_ = 100, sinceJumpOff_ = 100, sinceYank_ = 100;
+    uint32_t surges_{};
 };
 } // namespace spidy

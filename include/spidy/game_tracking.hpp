@@ -9,7 +9,8 @@
 namespace spidy {
 // triggerWebs: the controllers' triggers are the hands' web buttons (Input's
 // grip) and their grips the reels (Input's trigger), swapped from the default.
-Input trackedSwingInput(const XrFrame& frame, const Rig& rig, bool triggerWebs = false);
+// handAim: webs go along the hands' line (handLine), not the controllers' pointers.
+Input trackedSwingInput(const XrFrame& frame, const Rig& rig, bool triggerWebs = false, bool handAim = false);
 native_rays::Command controllerAimRays(const Input&, uint64_t serial);
 struct GameMotionFrame {
     bool active{}, releaseWebs = true;
@@ -212,6 +213,11 @@ class GameTrackingRig {
     void standOnWalls(bool on) {
         standOnWalls_ = on;
     }
+    // Whether webs go along the hands' line (the AIM setting; handLine) or
+    // the controllers' pointers; the pointers until set. reset() keeps it.
+    void handAim(bool on) {
+        handAim_ = on;
+    }
     void reset();
 
   private:
@@ -222,7 +228,7 @@ class GameTrackingRig {
     std::int64_t lastTime_{};
     bool initialized_{}, wasActive_{}, turnHeld_{}, pendingRecenter_{}, onSurface_{}, flips_{};
     // The trigger webs, and the web button changed since the last frame of play.
-    bool triggerWebs_{}, buttonsChanged_{};
+    bool triggerWebs_{}, buttonsChanged_{}, handAim_{};
     float snap_ = .5235988f, smooth_{};
     // The stand-off wanted along the surface's normal, and the time on it.
     float surfaceDepth_{}, surfaceSeconds_{};

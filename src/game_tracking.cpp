@@ -200,7 +200,7 @@ Quat FlipMotion::update(const Sample& s) {
     }
     return tilt_;
 }
-Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs) {
+Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs, bool handAim) {
     Input input;
     input.focused = f.focused && f.valid && validTrackedPose(f.head);
     if (!input.focused)
@@ -213,9 +213,15 @@ Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs) {
         // The web button and the reel: the grip and the trigger, or swapped.
         const float web = triggerWebs ? hand.trigger : hand.squeeze;
         const float reel = triggerWebs ? hand.squeeze : hand.trigger;
-        if (handValid(hand))
-            input.hands[i] = {rig.toWorld(hand.aim), hand.grip.position - f.head.position, true,
-                              std::clamp(reel, 0.f, 1.f), std::clamp(web, 0.f, 1.f)};
+        if (handValid(hand)) {
+            // Webs leave the wrist's shooter along the hand's line or the
+            // controller's aim; punches land at the aim's point, the knuckles.
+            const auto aim = rig.toWorld(hand.aim);
+            const Quat toward = handAim ? handLine(hand.grip.orientation) : hand.aim.orientation;
+            input.hands[i] = {rig.toWorld({webShooterPoint(hand.grip, i), toward}),
+                              hand.grip.position - f.head.position, true, std::clamp(reel, 0.f, 1.f),
+                              std::clamp(web, 0.f, 1.f), aim.position};
+        }
     }
     const auto& move = f.hands[0];
     if (handValid(move) && std::hypot(move.stickX, move.stickY) > .2f) {
@@ -227,7 +233,7 @@ Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs) {
 }
 void GameTrackingRig::reset() {
     const float snap = snap_, smooth = smooth_;
-    const bool flips = flips_, triggerWebs = triggerWebs_, standOnWalls = standOnWalls_;
+    const bool flips = flips_, triggerWebs = triggerWebs_, standOnWalls = standOnWalls_, handAim = handAim_;
     const FlipMotion flip = flip_;
     *this = {};
     snap_ = snap;
@@ -235,6 +241,7 @@ void GameTrackingRig::reset() {
     flips_ = flips;
     triggerWebs_ = triggerWebs;
     standOnWalls_ = standOnWalls;
+    handAim_ = handAim;
     flip_ = flip;
     flip_.reset();
 }
@@ -401,7 +408,7 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     pendingRecenter_ = buttonsChanged_ = false;
     out.predictedDisplayTime = f.predictedDisplayTime;
     out.anchor = feet;
-    out.swing = trackedSwingInput(f, placed, triggerWebs_);
+    out.swing = trackedSwingInput(f, placed, triggerWebs_, handAim_);
     // The left stick turns the flip: the player does not walk or drift.
     if (flip_.steering())
         out.swing.move = {};

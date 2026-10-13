@@ -120,6 +120,26 @@ def free_commit_mb():
     return status.ullAvailPageFile >> 20
 
 
+def foreground_owner(game_pid):
+    """None while the game's window is in front; else the front window's program and title. The game pauses
+    while another window is in front (vr_launcher.bring_to_front): on October 11 it stood still for 42 s
+    mid-swing, VR on the game screen, its pad unread."""
+    user32 = c.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, c.byref(pid))
+    if pid.value == game_pid:
+        return None
+    title = c.create_unicode_buffer(128)
+    user32.GetWindowTextW(hwnd, title, 128)
+    exe, size = c.create_unicode_buffer(260), wintypes.DWORD(260)
+    process = c.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if process:
+        c.windll.kernel32.QueryFullProcessImageNameW(process, 0, exe, c.byref(size))
+        c.windll.kernel32.CloseHandle(process)
+    return f"{pathlib.Path(exe.value).name or 'pid ' + str(pid.value)} '{title.value}'"
+
+
 class ProcessMemory(c.Structure):
     _fields_ = [('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD), ('PeakWorkingSetSize', c.c_size_t),
                 ('WorkingSetSize', c.c_size_t), ('QuotaPeakPagedPoolUsage', c.c_size_t),
@@ -493,6 +513,10 @@ def settings_line(start, sample):
     """The line for the launcher, or None while the settings are as the session started."""
     now = (sample or {}).get('vr_settings')
     if not now or now == start:
+        return None
+    # All zeros: the game closed before VR read its settings (a crash at the start). The game never reports a swing
+    # speed, weight or flip speed of 0, and the launcher would clamp them to their minimums.
+    if not (now.get('swing_speed') and now.get('weight') and now.get('flip_speed')):
         return None
     return SETTINGS_LINE + ' '.join(f'{k}={int(round(v))}' for k, v in now.items())
 
@@ -981,11 +1005,12 @@ def save_eye_snapshot(game, address, shot, folder, name, view=544, crop=512):
 
 def timing_snapshot(game, address):
     names=('frame','wait_frame','tracking','prepare','acquire','copy_wait','hand_overlay','release','end_frame','display_period')
+    size=1416
     for _ in range(8):
-        raw=game.read(address,344)
-        if len(raw)!=344:
+        raw=game.read(address,size)
+        if len(raw)!=size:
             return None
-        if struct.unpack_from('<3I',raw)!=(0x5358544d,1,344):
+        if struct.unpack_from('<3I',raw)!=(0x5358544d,2,size):
             raise RuntimeError('XR timing protocol mismatch')
         if struct.unpack_from('<Q',raw,16)[0]&1 or raw[16:24]!=game.read(address+16,8):
             continue
@@ -993,8 +1018,33 @@ def timing_snapshot(game, address):
         for i,name in enumerate(names):
             count,total,maximum,last=struct.unpack_from('<Q3d',raw,24+32*i)
             result[name]=dict(count=count,mean_ms=total/count if count else 0,max_ms=maximum,last_ms=last)
+        gaps=struct.unpack_from('<128I',raw,344)
+        loops=struct.unpack_from('<128I',raw,344+512)
+        new_gaps,loop_frames=struct.unpack_from('<2Q',raw,344+1024)
+        over15,over2,max_run,_run=struct.unpack_from('<4I',raw,344+1040)
+        max_gap,period=struct.unpack_from('<2d',raw,344+1056)
+        result['cadence']=dict(
+            period_ms=period,
+            new_pair_gap_ms=dict(count=new_gaps,max_ms=max_gap,**histogram_percentiles(gaps)),
+            over_1_5_periods=over15, over_2_periods=over2, max_reused_run=max_run,
+            loop_ms=dict(count=loop_frames,**histogram_percentiles(loops)))
         return result
     return None
+
+
+def histogram_percentiles(hist, width_ms=0.5):
+    """p50/p95/p99/p99.9 of 0.5 ms buckets, as the bucket's upper edge; the last bucket is open-ended."""
+    total=sum(hist)
+    result={}
+    for name,q in (('p50',.5),('p95',.95),('p99',.99),('p999',.999)):
+        need,seen=q*total,0
+        result[name+'_ms']=None
+        for i,n in enumerate(hist):
+            seen+=n
+            if total and seen>=need:
+                result[name+'_ms']=(i+1)*width_ms
+                break
+    return result
 
 
 # Slow motion's counters (SlowMotionData in game_xr.cpp); a change of one is a sample.
@@ -1226,6 +1276,12 @@ def main():
     p.add_argument('--trigger-webs', action='store_true',
                    help='The trigger shoots and holds webs, and the grip reels in and shoots web balls (the two '
                         'swapped)')
+    p.add_argument('--swing-model', type=int, default=0, choices=(0, 1),
+                   help='The swing: 0 classic (0.2.11), 1 2.0 (an elastic web that keeps the speed of a fall it catches, '
+                        'a swing that leaves faster than it came in, A jumps off a swing)')
+    p.add_argument('--controller-aim', action='store_true',
+                   help="Webs go where the controllers point, as VR pointers, instead of along the hands' line "
+                        '(wrist to middle fingers, as Spider-Man shoots)')
     p.add_argument('--no-body', action='store_true',
                    help="Keep the hero hidden in VR (gloves drawn over the image) instead of your own body")
     p.add_argument('--no-punch', action='store_true', help='Fists pass through thugs instead of punching them')
@@ -1291,6 +1347,8 @@ def main():
         p.error('Use a weight of 40..300% of real gravity')
     if not 90 <= a.flip_speed <= 480:
         p.error('Use a flip speed of 90..480 degrees a second')
+    if a.swing_model not in (0, 1):
+        p.error('Use swing model 0 (classic) or 1 (2.0)')
     if (a.eye_height == 0) != (a.arm_length == 0) or a.eye_height and (
             not EYE_HEIGHTS_MM[0] <= a.eye_height <= EYE_HEIGHTS_MM[1] or
             not ARM_LENGTHS_MM[0] <= a.arm_length <= ARM_LENGTHS_MM[1]):
@@ -1426,7 +1484,7 @@ def session(a, startup):
         reflections, reflections_line = eye_reflections(saved.get('ScreenSpaceReflections'), a.no_eye_reflections,
                                                         saved.get('RTReflections', 0))
         game_view, game_view_line = ray_traced_view(saved.get('RTReflections', 0))
-        config = struct.pack('<4I7Q2IfI', 0x53585243, 23, 664, game.pid, game.base, queue,
+        config = struct.pack('<4I7Q2IfI', 0x53585243, 26, 672, game.pid, game.base, queue,
                              bridge_module, ray_module, motion_module, 0, 0,
                              int(a.seconds*1000), a.size, a.swing_speed,
                              int(a.capture_images) | (2 if a.overlay_webs else 0) |
@@ -1440,9 +1498,10 @@ def session(a, startup):
                              (0x10000 if a.game_monitor_view or game_view else 0) |
                              (0x20000 if a.own_shadows else 0) | (0 if reflections else 0x40000) |
                              (0x80000 if a.no_physical_webs else 0)) + \
-            runtime_path(manifest) + struct.pack('<14I', a.snap_turn, a.haptics, a.screen_size, a.smooth_turn,
+            runtime_path(manifest) + struct.pack('<16I', a.snap_turn, a.haptics, a.screen_size, a.smooth_turn,
                                                  a.render_scale, a.weight, a.eye_height, a.arm_length, a.hud,
-                                                 a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth, 0)
+                                                 a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth, 0,
+                                                 int(a.controller_aim), a.swing_model)
         startup.stage = 'starting VR'
         code = call_with_payload(process, xr['SpidyXrStart'], config)
         if code:
@@ -1452,6 +1511,8 @@ def session(a, startup):
         samples = deque(maxlen=12000)
         ray_samples = deque(maxlen=12000)
         swing_samples = deque(maxlen=12000)
+        # Each swing that ended, once: the solver's ledger of what it did to the speed (tools/analyze_swings.py).
+        swing_ledger = deque(maxlen=4000)
         # The web grab: a sample when a counter or a hand's grab changes, else once a second.
         grab_samples = deque(maxlen=12000)
         motion_samples = deque(maxlen=12000)
@@ -1487,6 +1548,8 @@ def session(a, startup):
         # The game's reads of Spidy's controller: none while buttons are held on the game screen means its
         # menus cannot be played (the October 7 Steam Link session: the game had turned XInput off).
         pad_watch = dict(reads=None, since=0.0, warned=False)
+        # Who held the foreground while the game's window was behind (foreground_owner), as {seconds, owner}.
+        focus_changes = []
 
         # How the eyes are rendered: upscaled from `upscale` percent of their size per side and anti-aliased
         # (or neither), whether the game renders a view of its own for the monitor as well, how often the
@@ -1510,7 +1573,8 @@ def session(a, startup):
                         game_settings_refused=startup.fields.get('game_settings_refused'),
                         xr_runtime=runtime, motion_hash=motion_hash,
                         xr_hash=xr_hash, ray_hash=ray_hash, samples=list(samples),
-                        swing_samples=list(swing_samples), motion_samples=list(motion_samples),
+                        swing_samples=list(swing_samples), swings=list(swing_ledger), swing_model=a.swing_model,
+                        motion_samples=list(motion_samples),
                         grab_samples=list(grab_samples), body=body, punch=punch,
                         punch_samples=list(punch_samples), strikes=strikes, strike_samples=list(strike_samples),
                         ropes=ropes, steam_guard=steam,
@@ -1521,6 +1585,7 @@ def session(a, startup):
                         stream_stalls=stream_stalls(list(samples)),
                         free_commit_mb=dict(start=start_commit, lowest=lowest_commit),
                         eye_snapshots=list(eye_shots), eye_snapshot_folder=str(eye_folder) if eye_shots else None,
+                        focus_changes=list(focus_changes),
                         frame_rates=frame_rates(list(samples)), final=samples[-1] if samples else None, **extra)
 
         def write_report(result):
@@ -1643,6 +1708,11 @@ def session(a, startup):
                     samples.append(sample)
                     if pad_ignored(pad_watch, sample):
                         print(PAD_IGNORED, flush=True)
+                    owner = foreground_owner(game.pid)
+                    if owner != (focus_changes[-1]['owner'] if focus_changes else None):
+                        focus_changes.append(dict(seconds=sample['seconds'], owner=owner))
+                        print(f"Focus: {owner} is in front of the game, which pauses until it is in front again"
+                              if owner else 'Focus: the game is in front again', flush=True)
                     if sample['eye_width'] and not printed_dimensions:
                         print(rendering_line(sample['eye_width'], sample['eye_height'], a.render_scale, a.size,
                                              runtime['recommended_eye'], a.upscale, not a.no_eye_antialiasing),
@@ -1656,6 +1726,10 @@ def session(a, startup):
                         ray_samples.append(aim)
                     swing = swing_snapshot(game,rays['SpidySwingData'])
                     if swing and swing['steps'] and (not swing_samples or swing['steps'] != swing_samples[-1]['steps']):
+                        last_swing = swing.pop('last_swing')
+                        if last_swing['swings'] and (not swing_ledger or last_swing['swings'] != swing_ledger[-1]['swings']):
+                            last_swing['qpc'] = swing['qpc']
+                            swing_ledger.append(last_swing)
                         swing_samples.append(swing)
                     grab = grab_snapshot(game, rays['SpidyGrabData'])
                     if grab:
@@ -1736,7 +1810,7 @@ def session(a, startup):
             ray_hash=ray_hash, ray_samples=list(ray_samples), rays=ray_snapshot(game, rays['SpidyRayData']),
             motion_hash=motion_hash, swing_speed=a.swing_speed, vr_settings=settings_start, xr_runtime=runtime,
             game_settings_refused=startup.fields.get('game_settings_refused'),
-            swing_samples=list(swing_samples),
+            swing_samples=list(swing_samples), swings=list(swing_ledger), swing_model=a.swing_model,
             grab_samples=list(grab_samples), grab=grab_snapshot(game, rays['SpidyGrabData']),
             body=body_snapshot(game, xr['SpidyBodyData']) or body,
             punch=punch_snapshot(game, rays['SpidyPunchData']) or punch, punch_samples=list(punch_samples),
@@ -1772,7 +1846,14 @@ def session(a, startup):
         print(json.dumps(dict(final=final, gpu=result['gpu'], appearance=result['appearance'],
                               xr_stop=xr_stop, bridge_stop=bridge_stop), indent=2))
         if result['timing']:
-            print('Mean milliseconds after warmup: '+', '.join(f'{k}={v["mean_ms"]:.2f}' for k,v in result['timing'].items()),flush=True)
+            print('Mean milliseconds after warmup: '+', '.join(f'{k}={v["mean_ms"]:.2f}' for k,v in result['timing'].items() if k!='cadence'),flush=True)
+            cad=result['timing'].get('cadence')
+            if cad and cad['new_pair_gap_ms']['count']:
+                g,l=cad['new_pair_gap_ms'],cad['loop_ms']
+                print(f"Smoothness (display period {cad['period_ms']:.2f} ms): new-pair gap p50={g['p50_ms']} "
+                      f"p95={g['p95_ms']} p99={g['p99_ms']} p99.9={g['p999_ms']} max={g['max_ms']:.1f} ms; "
+                      f"gaps over 1.5x/2x period: {cad['over_1_5_periods']}/{cad['over_2_periods']} of {g['count']}; "
+                      f"longest reused run: {cad['max_reused_run']}; XR loop p99={l['p99_ms']} ms.",flush=True)
         if result['frame_rates']:
             rates=result['frame_rates']
             print(f"New native scene pairs: {rates['new_scene_fps']:.1f}/s; "

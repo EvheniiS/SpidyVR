@@ -113,6 +113,7 @@ Spidy changes nothing in the game's folder.
 | Called blows | An arrow comes into the ring from the side your fist should come from: swing a hook from that side, an uppercut from below or a blow down from above, at arm's reach or from across the room. The yellow arrow into a jagged red ring calls the finisher |
 | Walls | Walk at one, or fly or jump into it, and you stay on it: at speed you run along it, then stop. **Left stick** walks it (pushed at the wall: up it), **A** jumps off, a web pulls you off. Walking it or stopped, your view turns so the wall is your floor (STAND ON WALLS in VR settings or the launcher) |
 | Flip (experimental, off by default: FLIPS and FLIP SPEED in VR settings or the launcher) | **Left stick** in the air: turns you over, as fast as you tilt it; let go to come back level. Tap **A** in the air: one flip toward where the stick points. Hold **A**: you stay turned while the stick rests |
+| Dive (as in the game: faster and faster, and a web that catches it swings on at that speed) | Click the **right stick** in the air with no web attached; click again, web or land to stop |
 | Turn | **Right stick**: snap 30° (adjustable or off), or hold to turn smoothly with SMOOTH TURN on in VR settings |
 | Dodge (the game's B) | **B**, the way the **left stick** points; not while a web carries you |
 | Interact (the game's Y) | **Y**, looking at the thing from within about a metre of it; hold **Y** and you step up to what you look at until the game takes it |
