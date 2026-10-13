@@ -1276,6 +1276,9 @@ def main():
     p.add_argument('--trigger-webs', action='store_true',
                    help='The trigger shoots and holds webs, and the grip reels in and shoots web balls (the two '
                         'swapped)')
+    p.add_argument('--controller-aim', action='store_true',
+                   help="Webs go where the controllers point, as VR pointers, instead of along the hands' line "
+                        '(wrist to middle fingers, as Spider-Man shoots)')
     p.add_argument('--no-body', action='store_true',
                    help="Keep the hero hidden in VR (gloves drawn over the image) instead of your own body")
     p.add_argument('--no-punch', action='store_true', help='Fists pass through thugs instead of punching them')
@@ -1476,7 +1479,7 @@ def session(a, startup):
         reflections, reflections_line = eye_reflections(saved.get('ScreenSpaceReflections'), a.no_eye_reflections,
                                                         saved.get('RTReflections', 0))
         game_view, game_view_line = ray_traced_view(saved.get('RTReflections', 0))
-        config = struct.pack('<4I7Q2IfI', 0x53585243, 23, 664, game.pid, game.base, queue,
+        config = struct.pack('<4I7Q2IfI', 0x53585243, 25, 672, game.pid, game.base, queue,
                              bridge_module, ray_module, motion_module, 0, 0,
                              int(a.seconds*1000), a.size, a.swing_speed,
                              int(a.capture_images) | (2 if a.overlay_webs else 0) |
@@ -1490,9 +1493,10 @@ def session(a, startup):
                              (0x10000 if a.game_monitor_view or game_view else 0) |
                              (0x20000 if a.own_shadows else 0) | (0 if reflections else 0x40000) |
                              (0x80000 if a.no_physical_webs else 0)) + \
-            runtime_path(manifest) + struct.pack('<14I', a.snap_turn, a.haptics, a.screen_size, a.smooth_turn,
+            runtime_path(manifest) + struct.pack('<16I', a.snap_turn, a.haptics, a.screen_size, a.smooth_turn,
                                                  a.render_scale, a.weight, a.eye_height, a.arm_length, a.hud,
-                                                 a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth, 0)
+                                                 a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth, 0,
+                                                 int(a.controller_aim), 0)
         startup.stage = 'starting VR'
         code = call_with_payload(process, xr['SpidyXrStart'], config)
         if code:

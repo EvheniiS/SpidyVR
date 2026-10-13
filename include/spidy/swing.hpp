@@ -121,15 +121,25 @@ inline float fallCarry(float fallSpeed) {
 // The web shooter's nozzle, as Spider-Man's: on the palm side of the wrist,
 // at the heel of the hand (a right hand's grip frame: +y back toward the
 // forearm, +x toward the back of the hand; a left hand mirrors x). Webs leave
-// here, along the controller's aim; the aim pose itself sits at the knuckles.
+// here, along the hand's line (handLine) or the controller's aim; the aim
+// pose itself sits at the knuckles.
 constexpr Vec3 webShooterFromGrip{-.02f, .075f, 0};
 inline Vec3 webShooterPoint(Pose grip, unsigned hand) {
     const Vec3 o = webShooterFromGrip;
     return grip.position + grip.orientation.rotate({hand == 0 ? -o.x : o.x, o.y, o.z});
 }
+// The hand's line, as Spider-Man's thwip: from the wrist straight through the
+// fist past the middle fingers' knuckles, the grip frame's -y (OpenXR's grip:
+// -z runs up the handle toward the thumb, +-x out of the palm), with the
+// handle's top as up. A natural, straight hand aims it; the controller's
+// pointer leaves its top by the thumb instead (Oct 11 2026: aims turned from
+// the pointer toward the palm by 15-90 degrees all missed the hand's line).
+inline Quat handLine(Quat grip) {
+    return grip * Quat::around({1, 0, 0}, -1.5707964f);
+}
 struct HandInput {
-    // World space, -Z forward: the controller's aim, from the web shooter
-    // (webShooterPoint; trackedSwingInput).
+    // World space, -Z forward: the hand's line (handLine) or the controller's
+    // aim, from the web shooter (webShooterPoint; trackedSwingInput).
     Pose aim{};
     Vec3 gripRelativeToHead{}; // tracking meters, excludes artificial travel
     bool tracked{};

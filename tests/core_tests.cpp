@@ -1306,7 +1306,7 @@ int main() {
         out=rig.update(f,{},{0,0,-1},true);
         check(!out.walkRight&&!out.walkForward&&!out.nativeKeys,"resting stick walked");
     });
-    test("WEB SHOOTER: webs leave the palm side of the wrist along the aim, punches land at the knuckles", [] {
+    test("WEB SHOOTER: webs leave the palm side of the wrist along the hand or the aim, punches at the knuckles", [] {
         auto f=trackedFrame();
         // A controller held level, pointing ahead (-z): the grip frame's -y runs
         // out past the knuckles, so the hand's grip turns -y onto -z.
@@ -1321,6 +1321,18 @@ int main() {
             near(h.aim.position.x-grip0.x,i==0?.02f:-.02f,1e-4f);
             near(length(h.aim.orientation.rotate({0,0,-1})-Vec3{0,0,-1}),0,1e-5f);
             near(h.fist.z,-.58f,1e-5f);near(fistPoint(h).z,-.58f,1e-5f);
+        }
+        // Along the hand's line: the web follows the fist's -y, not the
+        // pointer. Pitch the pointer 30 degrees up from the fist, as a thumb
+        // on the controller's top would: the hand's web stays ahead, its up
+        // the handle's top, from the same nozzle.
+        for(unsigned i=0;i<2;++i)f.hands[i].aim.orientation=Quat::around({1,0,0},.5235988f);
+        const auto pointer=trackedSwingInput(f,{}), hand=trackedSwingInput(f,{},false,true);
+        for(unsigned i=0;i<2;++i){
+            near(length(hand.hands[i].aim.orientation.rotate({0,0,-1})-Vec3{0,0,-1}),0,1e-5f);
+            near(length(hand.hands[i].aim.orientation.rotate({0,1,0})-grip.rotate({0,0,-1})),0,1e-5f);
+            near(pointer.hands[i].aim.orientation.rotate({0,0,-1}).y,.5f,1e-5f);
+            near(length(hand.hands[i].aim.position-input.hands[i].aim.position),0,1e-6f);
         }
         game_swing::Command c;c.serial=1;
         for(unsigned i=0;i<2;++i){c.hands[i].aim={input.hands[i].aim.position,{0,0,0,1}};c.fists[i]=input.hands[i].fist;}

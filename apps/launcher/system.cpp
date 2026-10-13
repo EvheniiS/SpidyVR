@@ -542,6 +542,7 @@ Settings loadSettings() {
         else if (key == "air_webs") o.airWebs = number() != 0;
         else if (key == "flips") o.flips = number() != 0;
         else if (key == "trigger_webs") o.triggerWebs = number() != 0;
+        else if (key == "controller_aim") o.controllerAim = number() != 0;
         else if (key == "stand_on_walls") o.standOnWalls = number() != 0;
         else if (key == "physical_webs") o.physicalWebs = number() != 0;
         else if (key == "game_depth_of_field") o.gameDepthOfField = number() != 0;
@@ -601,7 +602,8 @@ void saveSettings(const Settings& settings) {
     file << "game=" << narrow(settings.gameExe) << "\nxr_runtime=" << narrow(settings.runtime)
          << "\nsmall_window=" << o.smallWindow << "\nstock_monitor_view=" << o.stockMonitorView
          << "\naim_markers=" << o.aimMarkers << "\nair_webs=" << o.airWebs << "\nflips=" << o.flips
-         << "\ntrigger_webs=" << o.triggerWebs << "\nstand_on_walls=" << o.standOnWalls
+         << "\ntrigger_webs=" << o.triggerWebs << "\ncontroller_aim=" << o.controllerAim
+         << "\nstand_on_walls=" << o.standOnWalls
          << "\nphysical_webs=" << o.physicalWebs << "\ngame_depth_of_field=" << o.gameDepthOfField
          << "\ngame_sharpening=" << o.gameSharpening
          << "\nrender_scale=" << o.renderScale << "\nupscale=" << o.upscale

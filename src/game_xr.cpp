@@ -43,7 +43,7 @@
 #include <mmsystem.h>
 using namespace spidy;
 struct XrConfig {
-    uint32_t magic = 0x53585243, version = 23, bytes = sizeof(XrConfig), pid{};
+    uint32_t magic = 0x53585243, version = 25, bytes = sizeof(XrConfig), pid{};
     // record and mover are no longer used: VR starts with the game, before
     // there is a player, and finds each new player itself (game_player).
     uint64_t base{}, queue{}, bridgeModule{}, rayModule{}, motionModule{}, record{}, mover{};
@@ -106,8 +106,11 @@ struct XrConfig {
     // game's flat frame), 1 low, 2 medium, 3 high (vr_settings::screenDepths);
     // and a spare word.
     uint32_t screenDepth = 2, spare{};
+    // Webs go along the controllers' pointers (1) or the hands' line (0;
+    // handLine); then padding.
+    uint32_t controllerAim{}, reserved{};
 };
-static_assert(sizeof(XrConfig) == 664);
+static_assert(sizeof(XrConfig) == 672);
 // Why the last frame had no gameplay (XrData::gate bits).
 enum GateReason : uint32_t {
     gateNoPlayer = 1,     // no save loaded, or a level change in progress
@@ -759,6 +762,7 @@ DWORD WINAPI run(void*) {
             rig.flips(values.flips);
             rig.flipSpeed(static_cast<float>(values.flipSpeed) * 3.14159265f / 180);
             rig.triggerWebs(values.triggerWebs);
+            rig.handAim(!config.controllerAim);
             rig.standOnWalls(values.standOnWalls);
             native_hud::setSize(values.hud);
             if (swingStarted && swingSettings) {
@@ -2332,7 +2336,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
     if (worker)
         return 1000; // one bounded XR session per process during validation
     if (!read(reinterpret_cast<uintptr_t>(input), &config, sizeof(config)) || config.magic != 0x53585243 ||
-        config.version != 23 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
+        config.version != 25 || config.bytes != sizeof(config) || config.pid != GetCurrentProcessId() ||
         config.runtime[std::size(config.runtime) - 1] ||
         config.base != reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr)) ||
         !GetModuleHandleW(L"Spider-Man.exe") || !config.queue || !config.bridgeModule || !config.rayModule ||
@@ -2340,7 +2344,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
         !validEyeUpscale(config.upscale) || !validMonitorRate(config.monitorRate) ||
         config.screenSize > 2 || config.screenDepth > 3 || config.spare || config.smoothTurn > 360 ||
         config.hud > 3 || config.flipSpeed < 90 ||
-        config.flipSpeed > 480 || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
+        config.flipSpeed > 480 || config.controllerAim > 1 || config.reserved || !std::isfinite(config.swingSpeed) || config.swingSpeed < 1 ||
         config.swingSpeed > 65 || (config.durationMs && config.durationMs < 2000) || config.durationMs > 25000 ||
         (config.eyeSize && !validEyeSize(config.eyeSize)) || !validRenderScale(config.renderScale) ||
         (config.eyeSize && config.renderScale != 100) || config.weight < 40 || config.weight > 300)

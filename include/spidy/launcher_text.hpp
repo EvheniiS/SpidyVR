@@ -504,6 +504,9 @@ struct SessionOptions {
     int flipSpeed = 180; // degrees a second a flip turns you at full tilt of the left stick
     // The trigger shoots and holds webs, and the grip reels them in and shoots web balls; off, the other way round.
     bool triggerWebs = false;
+    // Webs go where the controllers point, as VR pointers; off, along the hands' line from the wrist past the middle
+    // fingers, as Spider-Man shoots.
+    bool controllerAim = false;
     int hud = 2; // the game's HUD in the headset: 0 off, 1 small, 2 medium, 3 large
     // Walking a wall or stopped on it, your view turns so that the wall is your floor; off, you stay upright.
     bool standOnWalls = true;

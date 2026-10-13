@@ -74,6 +74,8 @@ constexpr const char* kHudSizes[] = {"Off", "Small", "Medium", "Large"};
 constexpr const char* kScreenDepths[] = {"Off", "Low", "Medium", "High"};
 // The button that shoots and holds webs (SessionOptions::triggerWebs: the second).
 constexpr const char* kWebButtons[] = {"Grip", "Trigger"};
+// Where a web goes (SessionOptions::controllerAim: the second).
+constexpr const char* kAims[] = {"Hand", "Controller"};
 constexpr const char* kWeights[] = {"40%", "60%", "80%", "100%", "125%", "150%", "200%", "250%", "300%"};
 constexpr int kWeightValues[] = {40, 60, 80, 100, 125, 150, 200, 250, 300};
 constexpr const char* kFlipSpeeds[] = {"90\xC2\xB0/s",  "120\xC2\xB0/s", "150\xC2\xB0/s", "180\xC2\xB0/s",
@@ -1036,6 +1038,13 @@ void App::optionsCard(ImVec2 size) {
                int trigger = o.triggerWebs ? 1 : 0;
                stepCombo("##webButton", kWebButtons, buttons, 2, &trigger);
                o.triggerWebs = trigger != 0;
+           });
+    option("Aim", "Hand: a web goes straight along your hand, wrist to middle fingers. Controller: where it points.",
+           S(150), [&] {
+               static constexpr int aims[] = {0, 1};
+               int controller = o.controllerAim ? 1 : 0;
+               stepCombo("##aim", kAims, aims, 2, &controller);
+               o.controllerAim = controller != 0;
            });
     option("Webs hold in open air", "With nothing in reach, a web still holds 100 m out; off, it misses.", S(40),
            [&] { changed |= toggle("##air", &o.airWebs); });
