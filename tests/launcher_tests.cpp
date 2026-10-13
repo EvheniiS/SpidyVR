@@ -326,6 +326,11 @@ int main() {
                   options.swingSpeed == 65 && options.snapTurn == 45 && options.smoothTurn == 360 &&
                   options.haptics == 0 && options.weight == 40 && options.hud == 3 && options.flipSpeed == 480,
               "values outside their ranges, unreadable ones and unknown keys");
+        const auto before = options;
+        check(!headsetSettings("VR settings from the headset: aim_markers=0 web_grab=0 air_webs=0 swing_speed=0 "
+                               "weight=0 snap_turn=0 haptics=0 flip_speed=0 hud=0",
+                               options) && options == before,
+              "a game that closed before VR read its settings zeroed the next session's");
     });
     test("a T-pose calibration in the headset sizes every next session, until Redo", [] {
         SessionOptions options;

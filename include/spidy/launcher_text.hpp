@@ -631,6 +631,12 @@ inline bool headsetSettings(std::string_view line, SessionOptions& options) {
         const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
         if (error != std::errc() || end != value.data() + value.size())
             continue;
+        // The game never reports a swing speed, weight or flip speed of 0: a
+        // line with one is a session whose game closed before VR read its
+        // settings (Oct 10 2026: an OpenXR layer's crash at the start printed
+        // all zeros, which clamped to every minimum, swing speed 10).
+        if (number == 0 && (key == "swing_speed" || key == "weight" || key == "flip_speed"))
+            return false;
         if (key == "aim_markers")
             next.aimMarkers = number != 0;
         else if (key == "air_webs")

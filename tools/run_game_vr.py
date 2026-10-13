@@ -494,6 +494,10 @@ def settings_line(start, sample):
     now = (sample or {}).get('vr_settings')
     if not now or now == start:
         return None
+    # All zeros: the game closed before VR read its settings (a crash at the start). The game never reports a swing
+    # speed, weight or flip speed of 0, and the launcher would clamp them to their minimums.
+    if not (now.get('swing_speed') and now.get('weight') and now.get('flip_speed')):
+        return None
     return SETTINGS_LINE + ' '.join(f'{k}={int(round(v))}' for k, v in now.items())
 
 
