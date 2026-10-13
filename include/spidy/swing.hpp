@@ -121,12 +121,23 @@ struct SwingConfig {
     // rope in that the body never followed, and the take-off pulled it all
     // in at once at the speed limit (October 11 headset report).
     bool reelFollows = false;
-    // The swing's pump (hero_swingsetup MotionParams GravityParams: 24 m/s^2
-    // on the way down, 2-14 on the way up with the stick held). While a taut
-    // web holds the body up, gravity is swingFall times as strong as it falls
-    // and swingRise times as strong as it rises, so a swing leaves faster
-    // than it came in. 1 and 1: a swing never leaves faster than it came.
+    // The swing's pump. While a taut web holds the body up, gravity is
+    // swingFall times as strong as it falls and swingRise times as strong as
+    // it rises, so a swing may leave faster than it came in. 1 and 1: a swing
+    // never leaves faster than it came.
     float swingFall = 1, swingRise = 1;
+    // The game's swing gravity instead (Swing::swingGravity; hero_swingsetup
+    // GravityParams, read in the game's code, Oct 13 2026): swingFall times
+    // gravity on the way down (the game's 24 of 26), half that for the first
+    // quarter second after a web attaches; on the way up the game's curve by
+    // the velocity's pitch, the speed and the rope's length, times swingRise;
+    // swinging back from the top, 14 and 22 of 26. The game's upswing is light
+    // with the stick held forward along the way and heavy without it; no stick
+    // steers a swing here (the left stick flips), so a fixed swingIntent, 0 to
+    // 1, stands for it: 0.4 lets a swing held to its top come back about as
+    // high as it fell (spidy_swing_bench: 0.3 loses height, 0.5 gains it).
+    bool swingCurve = false;
+    float swingIntent = .4f;
     // A jump with a web attached in the air leaps off the swing
     // (hero_swingconfig ReleaseParams by the velocity's pitch): every web lets
     // go, the body rises at least jumpOffUp m/s and goes jumpOffBoost m/s
@@ -208,8 +219,9 @@ inline void applySwingModel(SwingConfig& c, SwingModel model) {
     c.boostTarget = v2 ? 10.f : classic.boostTarget;
     c.momentum = v2 || classic.momentum;
     c.momentumTime = v2 ? 1.5f : classic.momentumTime;
-    c.swingFall = v2 ? 1.25f : classic.swingFall;
-    c.swingRise = v2 ? .6f : classic.swingRise;
+    c.swingCurve = v2 || classic.swingCurve;
+    c.swingFall = v2 ? 24.f / 26 : classic.swingFall;
+    c.swingRise = classic.swingRise;
     constexpr float up[3]{6, 10, 13}, boost[3]{4, 9, 11};
     for (int i = 0; i < 3; ++i) {
         c.jumpOffUp[i] = v2 ? up[i] : classic.jumpOffUp[i];
@@ -525,8 +537,11 @@ class Swing {
     // A jump with a web attached in the air (SwingConfig's jumpOff*).
     void jumpOff(const Input&);
     // A taut web holding the body up, and the rope's angle from straight
-    // down at the most upright such web (degrees; 0 for none).
-    bool hung(float* angle = nullptr) const;
+    // down at the most upright such web (degrees; 0 for none) and its length.
+    bool hung(float* angle = nullptr, float* rope = nullptr) const;
+    // The game's swing gravity on a taut web of this length now, as a share of
+    // the player's gravity (SwingConfig::swingCurve).
+    float swingGravity(float rope) const;
     // The swing's speed boost for one step (SwingConfig's boost*).
     void boostSwing(float dt);
     // 2.0's game speeds at this player's gravity (SwingConfig::gameFall):
@@ -598,8 +613,10 @@ class Swing {
     float boostRamp_{};
     // Where the swing is on its arc (the game's swing mode): 0 from a web's
     // attaching to the bottom of its arc, 1 once a taut web carries the body
-    // up past it.
+    // up past it, 2 once it falls back from there. The seconds since a web
+    // attached.
     int swingMode_{};
+    float sinceAttach_ = 100;
     // The momentum meter, the seconds since it last rose, since each source
     // raised it, and the times it has reached momentumHigh.
     float momentum_{}, sinceMomentum_ = 100, sinceLetGo_ = 100, sinceJumpOff_ = 100, sinceYank_ = 100;

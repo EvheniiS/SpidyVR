@@ -7938,11 +7938,12 @@ int main() {
             check(classic.jumpOffUp[i] == 0 && classic.jumpOffBoost[i] == 0, "the classic swing jumps off");
         SwingConfig c;
         applySwingModel(c, SwingModel::v2);
-        check(c.catchFrequency > 0 && c.swingFall > 1 && c.swingRise < 1 && c.jumpOffBoost[1] > 0,
+        check(c.catchFrequency > 0 && c.swingCurve && c.swingFall < 1 && c.jumpOffBoost[1] > 0,
               "2.0 is the classic swing");
         static_cast<void>(spidy::Swing(c)); // a valid configuration
         applySwingModel(c, SwingModel::classic);
-        check(c.catchFrequency == 0 && c.swingFall == 1 && c.jumpOffUp[2] == 0, "2.0 stayed after classic");
+        check(c.catchFrequency == 0 && c.swingFall == 1 && c.jumpOffUp[2] == 0 && !c.swingCurve,
+              "2.0 stayed after classic");
     });
     test("a rigid web snaps taut and cuts the speed; an elastic one catches and keeps it", [&] {
         const auto rigid = swingAhead(SwingModel::classic, 1.6f), elastic = swingAhead(SwingModel::v2, 1.6f);
@@ -7983,25 +7984,72 @@ int main() {
                ("the jump off rose at " + std::to_string(v2.body.velocity.y)).c_str());
         check(v2.ledger.exit > held.ledger.exit + 3, ("the jump off left at " + std::to_string(v2.ledger.exit) + ", letting go at " + std::to_string(held.ledger.exit) + ", vy " + std::to_string(held.body.velocity.y)).c_str());
     });
-    test("2.0's pump: a swing from rest leaves faster than the classic one", [] {
-        float exits[2]{};
-        for (const auto model : {SwingModel::classic, SwingModel::v2}) {
-            SwingConfig c;
-            applySwingModel(c, model);
-            spidy::Swing s(c);
-            Ceiling world;
-            s.reset({{0, 35, 0}, {}, false});
-            const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+    // A swing from rest on a web 45 degrees up ahead, 25 m long, with no
+    // speed boost: the body's speed after `early` seconds, its height then,
+    // and the top of the far side within 8 s.
+    const auto fromRest = [](SwingModel model, float early, auto&& change) {
+        SwingConfig c;
+        applySwingModel(c, model);
+        c.boostTarget = 0;
+        change(c);
+        spidy::Swing s(c);
+        Ceiling world;
+        s.reset({{0, 42, 0}, {}, false});
+        const Quat aim = arc({0, 0, -1}, normalized(Vec3{1, 1, 0}));
+        float speed = 0, height = 0, top = 0;
+        bool rising = false;
+        for (int f = 1; f <= 720; ++f) {
             Input in;
-            for (int f = 0; f < 270; ++f) { // 3 s: through the bottom and up the far side
-                in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
-                s.update(1.f / 90, in, world);
+            in.hands[0] = {{s.body().position, aim}, {}, true, 0, 1};
+            s.update(1.f / 90, in, world);
+            if (f == static_cast<int>(std::lround(early * 90))) {
+                speed = length(s.body().velocity);
+                height = s.body().position.y;
             }
-            exits[model == SwingModel::v2] = length(s.body().velocity);
-            check(s.lastSwing().swings == 0 && s.swing().pump * (model == SwingModel::v2) >= 0, "the swing ended");
+            rising |= s.body().velocity.y > 1;
+            if (rising)
+                top = std::max(top, s.body().position.y);
         }
-        check(exits[1] > exits[0] + 1, ("2.0 left at " + std::to_string(exits[1]) + " m/s, classic at " +
-                                           std::to_string(exits[0])).c_str());
+        struct Result {
+            float speed, height, top;
+        };
+        return Result{speed, height, top};
+    };
+    const auto same = [](SwingConfig&) {};
+    test("2.0's swing gravity: half for a quarter second after a web attaches", [&] {
+        // The game's 12 of 26 m/s^2 for the first 0.25 s, 24 by 0.5 s.
+        const float v2 = fromRest(SwingModel::v2, .2f, same).speed;
+        const float classic = fromRest(SwingModel::classic, .2f, same).speed;
+        check(v2 > .38f * classic && v2 < .55f * classic,
+              ("after 0.2 s 2.0 went " + std::to_string(v2) + " m/s, classic " + std::to_string(classic))
+                  .c_str());
+    });
+    test("2.0's upswing: heavy with no intent, light with full intent", [&] {
+        // The game's upswing with no stick (28-45 of 26 m/s^2) and with the
+        // stick forward (2-11). The classic swing comes back to where it fell from.
+        const float classic = fromRest(SwingModel::classic, 1, same).top;
+        const float none = fromRest(SwingModel::v2, 1, [](SwingConfig& c) { c.swingIntent = 0; }).top;
+        const float full = fromRest(SwingModel::v2, 1, [](SwingConfig& c) { c.swingIntent = 1; }).top;
+        const float chosen = fromRest(SwingModel::v2, 1, same).top;
+        check(std::abs(classic - 42) < 1.5f, ("classic rose to " + std::to_string(classic)).c_str());
+        check(none < classic - 1 && full > classic + 5 && chosen > none && chosen < full,
+              ("2.0 rose to " + std::to_string(none) + " m with no intent, " + std::to_string(chosen) +
+               " m as set, " + std::to_string(full) + " m with full intent")
+                  .c_str());
+    });
+    test("2.0's momentum lightens the way up only", [&] {
+        const auto high = [](float gravity) {
+            return [gravity](SwingConfig& c) {
+                c.momentumHigh = 0; // the high stage from the start
+                c.momentumGravity = gravity;
+            };
+        };
+        const auto light = fromRest(SwingModel::v2, 1.5f, high(.5f)),
+                   plain = fromRest(SwingModel::v2, 1.5f, high(1));
+        check(light.height == plain.height && light.speed == plain.speed, "momentum changed the way down");
+        check(light.top > plain.top + 2, ("the way up rose to " + std::to_string(light.top) + " m, " +
+                                          std::to_string(plain.top) + " without")
+                                             .c_str());
     });
     test("2.0's web stretches 3 m at most, however fast the catch", [] {
         float deepest[2]{};

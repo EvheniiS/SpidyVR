@@ -117,7 +117,8 @@ Thrown swing(Swing& s, const OpenWorld& world, Body start, float pitch, float re
         Input in = aimed(now(s).position, way, true);
         const Vec3 v = now(s).velocity;
         rose |= v.y > 1;
-        const bool done = t > .2f && rose && pitchOf(v) >= release;
+        // release 90: held to the top of the swing, where it stops rising.
+        const bool done = t > .2f && rose && (release >= 90 ? v.y <= 0 : pitchOf(v) >= release);
         if (done) {
             in.hands[0].grip = jump ? 1.f : 0.f;
             in.jump = jump;
@@ -244,6 +245,9 @@ int main(int argc, char** argv) {
                  {{0, 40, 0}, {3, -fall, 0}, false}, 30, false);
         show("level at 10, jumping off", {{0, 35, 0}, {10, 0, 0}, false}, 30, true);
         show("level at 10, off at 50 deg", {{0, 35, 0}, {10, 0, 0}, false}, 50, true);
+        show("level at 10, held to the top", {{0, 35, 0}, {10, 0, 0}, false}, 90, false);
+        show("level at 20, held to the top", {{0, 35, 0}, {20, 0, 0}, false}, 90, false);
+        show("fall at 20, held to the top", {{0, 40, 0}, {3, -20, 0}, false}, 90, false);
         yankCatch(config, g);
         chain(config, g, false);
         chain(config, g, true);

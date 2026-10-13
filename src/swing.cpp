@@ -539,6 +539,7 @@ void Swing::reset(Body b) {
     swinging_ = false;
     boostRamp_ = 0;
     swingMode_ = 0;
+    sinceAttach_ = 100;
     momentum_ = 0;
     sinceMomentum_ = sinceLetGo_ = sinceJumpOff_ = sinceYank_ = 100;
     surges_ = 0;
@@ -787,6 +788,7 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                 // A new swing, from the top of its arc (the game's mode 0).
                 boostRamp_ = 0;
                 swingMode_ = 0;
+                sinceAttach_ = 0;
                 s.triggerReleased = false;
                 s.reeling = false;
                 s.zipUsed = false;
@@ -899,6 +901,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
     sinceLetGo_ += dt;
     sinceJumpOff_ += dt;
     sinceYank_ += dt;
+    sinceAttach_ += dt;
     decayMomentum(dt);
     const bool wasGrounded = body_.grounded;
     if (leapQueued_ > 0) {
@@ -977,16 +980,22 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             const float g = diving_ ? std::max(config_.gravity, config_.diveGravity) : config_.gravity;
             // The swing's pump: a taut web holding the body up changes
             // gravity on the way down and on the way up; high momentum
-            // lightens it (momentumGravity).
-            float angle{};
-            const bool hanging = hung(&angle);
-            // Carried up past the bottom of the arc (the game's mode 1).
-            if (hanging && body_.velocity.y > 0)
+            // lightens it (momentumGravity; the game's curve: on the way up).
+            float angle{}, rope{};
+            const bool hanging = hung(&angle, &rope);
+            // Carried up past the bottom of the arc (the game's mode 1), and
+            // falling back from the top (its mode 2).
+            if (hanging && swingMode_ == 0 && body_.velocity.y > 0)
                 swingMode_ = 1;
+            else if (hanging && swingMode_ == 1 && body_.velocity.y < 0)
+                swingMode_ = 2;
             const float lighter =
                 config_.momentum && momentum_ >= config_.momentumHigh ? config_.momentumGravity : 1.f;
             const float swung =
-                hanging ? g * (body_.velocity.y < 0 ? config_.swingFall : config_.swingRise) * lighter : g;
+                !hanging ? g
+                : config_.swingCurve
+                    ? g * swingGravity(rope)
+                    : g * (body_.velocity.y < 0 ? config_.swingFall : config_.swingRise) * lighter;
             if (counting())
                 swing_.pump -= (swung - g) * body_.velocity.y * dt;
             body_.velocity.y -= swung * dt;
@@ -1185,9 +1194,9 @@ void Swing::jumpOff(const Input& in) {
         release(i);
     events_.push_back({EventKind::JumpOff, -1, std::clamp(band / 2, .4f, 1.f)});
 }
-bool Swing::hung(float* angle) const {
+bool Swing::hung(float* angle, float* rope) const {
     bool any{};
-    float upright = 180;
+    float upright = 180, span = 0;
     for (int i = 0; i < 2; ++i) {
         const auto& w = webs_[i];
         if (!w.attached || w.anchor.y <= body_.position.y)
@@ -1198,11 +1207,54 @@ bool Swing::hung(float* angle) const {
         if (dist < 1e-5f || dist < w.length - .15f)
             continue;
         any = true;
-        upright = std::min(upright, std::acos(std::clamp(-d.y / dist, -1.f, 1.f)) * 57.29578f);
+        const float from = std::acos(std::clamp(-d.y / dist, -1.f, 1.f)) * 57.29578f;
+        if (from < upright) {
+            upright = from;
+            span = dist;
+        }
     }
     if (angle)
         *angle = any ? upright : 0;
+    if (rope)
+        *rope = span;
     return any;
+}
+float Swing::swingGravity(float rope) const {
+    // The game's swing gravity (Hero::HeroStateSwing, 0xac0b60), in m/s^2
+    // under its free fall of gameFall: only its shares carry over.
+    const float game = config_.gameFall;
+    const auto ramp = [](float x, float from, float to) {
+        return std::clamp((x - from) / (to - from), 0.f, 1.f);
+    };
+    const auto mix = [](float a, float b, float t) { return a + (b - a) * t; };
+    const Vec3 v = body_.velocity;
+    // Swinging back from the top of the arc (mode 2): 14 falling, 22 rising.
+    if (swingMode_ == 2)
+        return (v.y < 0 ? 14 : 22) / game;
+    // The way down: 24, half that for 0.25 s after a web attaches, full by 0.5 s.
+    if (v.y < 0)
+        return config_.swingFall * mix(.5f, 1, ramp(sinceAttach_, .25f, .5f));
+    // The way up: RiseGravityLow (velocity pitch to 30 degrees) and High (from
+    // 70), each between its value with no stick (LowMinZero 28 at 16 m/s to
+    // LowMaxZero 40 at 40; HighMinZero 30 at 12 to HighMaxZero 45 at 30) and
+    // with the stick forward (LowMin 2 to LowMax 4; HighMin 6 to HighMax 11),
+    // by the intent. The game's speeds, here at the player's gravity.
+    const float speed = length(v) / gameScale(), intent = std::clamp(config_.swingIntent, 0.f, 1.f);
+    const float pitch = std::asin(std::clamp(v.y / std::max(length(v), 1e-3f), -1.f, 1.f)) * 57.29578f;
+    const float low = mix(mix(28, 40, ramp(speed, 16, 40)), mix(2, 4, ramp(speed, 16, 40)), intent);
+    const float high = mix(mix(30, 45, ramp(speed, 12, 30)), mix(6, 11, ramp(speed, 12, 30)), intent);
+    float rise = mix(low, high, ramp(pitch, 30, 70));
+    // A short rope rises heavy (35 at 8 m and under); a long one lighter
+    // (RiseLineLengthScale 0.5 from 55 m).
+    if (rope < 16)
+        rise = mix(35, rise, ramp(rope, 8, 16));
+    else
+        rise *= mix(1, .5f, ramp(rope, 28, 55));
+    // High momentum lightens the way up past the bottom of the arc only
+    // (mode 1; its stage's GravityScale).
+    if (swingMode_ == 1 && config_.momentum && momentum_ >= config_.momentumHigh)
+        rise *= config_.momentumGravity;
+    return config_.swingRise * rise / game;
 }
 float Swing::gameScale() const {
     return std::sqrt(std::max(config_.gravity, .1f) / config_.gameFall);
